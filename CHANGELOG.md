@@ -1,0 +1,11 @@
+# Changelog
+
+All notable changes to the VAL reference packages (`@val-protocol/*`) are documented here. Packages follow [semantic versioning](https://semver.org/); the specification is versioned independently (currently draft v0.1).
+
+## [0.1.0] — 2026-06-04
+
+Initial public release of the VAL reference implementation under the `@val-protocol` scope.
+
+- **`@val-protocol/chain-verifier`** — the offline verifier. Zero runtime dependencies (Node `crypto` only); pure SHA-256 against the canonical preimage (spec §4). Implements passes 1–3 (integrity, lineage, scope — including the §6.4 Merkle isolation-membership check) plus the grounding re-derivation, via `verifyChain` + `verifyValChain`. Emits conformance profile A.
+- **`@val-protocol/webhook-receiver`** — reference signed-webhook receiver (delivery transport tooling; transport is §1.2 out-of-scope for the normative protocol). HMAC-SHA256 timing-safe verification, rotation-grace dual-signature acceptance, replay protection, family-prefixed routing, chain-field extraction. Zero runtime dependencies.
+- **License: Apache-2.0** across spec and reference implementation — explicit patent grant, royalty-free, no contributor licensing agreement.

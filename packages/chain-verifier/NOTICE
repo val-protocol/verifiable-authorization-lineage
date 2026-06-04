@@ -1,0 +1,12 @@
+@val-protocol/chain-verifier
+Copyright 2026 RIGA Solutions
+
+This product includes software originally developed by RIGA Solutions as the
+reference implementation of the Verifiable Authorization Lineage (VAL) protocol.
+Project home: https://github.com/val-protocol/verifiable-authorization-lineage
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not
+use this file except in compliance with the License. You may obtain a copy
+of the License at:
+
+    http://www.apache.org/licenses/LICENSE-2.0

@@ -1,0 +1,19 @@
+{
+  "name": "verifiable-authorization-lineage",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Verifiable Authorization Lineage (VAL) — reference implementation workspace. The protocol spec lives in spec/.",
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/val-protocol/verifiable-authorization-lineage",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/val-protocol/verifiable-authorization-lineage.git"
+  },
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present"
+  }
+}
