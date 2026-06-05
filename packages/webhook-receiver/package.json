@@ -57,5 +57,8 @@
     "@types/node": "^20",
     "tsx": "^4",
     "typescript": "^5"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }
