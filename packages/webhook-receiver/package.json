@@ -4,6 +4,7 @@
   "description": "Reference signed-webhook receiver for VAL chain-event deliveries. HMAC-SHA256 timing-safe verification with rotation grace, replay protection, family-prefixed event router, chain-field extraction. Zero runtime dependencies.",
   "license": "Apache-2.0",
   "author": "RIGA <hello@riga.solutions>",
+  "type": "module",
   "homepage": "https://github.com/val-protocol/verifiable-authorization-lineage/tree/main/packages/webhook-receiver",
   "repository": {
     "type": "git",
@@ -33,7 +34,7 @@
     }
   },
   "bin": {
-    "val-webhook-receiver": "./bin/val-webhook-receiver"
+    "val-webhook-receiver": "./bin/val-webhook-receiver.cjs"
   },
   "files": [
     "dist",
@@ -45,13 +46,13 @@
     ".env.example"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.cjs.json && tsc -p tsconfig.esm.json && tsc -p tsconfig.types.json",
+    "build": "rm -rf dist && tsc -p tsconfig.cjs.json && tsc -p tsconfig.esm.json && tsc -p tsconfig.types.json && node -e \"require('fs').writeFileSync('dist/cjs/package.json', JSON.stringify({type:'commonjs'}))\"",
     "test": "node --test --import tsx test/*.test.ts",
     "start": "tsx src/server.ts",
     "prepublishOnly": "npm run build && npm test && ../../scripts/verify-esm-extensions.sh"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=18"
   },
   "devDependencies": {
     "@types/node": "^20",

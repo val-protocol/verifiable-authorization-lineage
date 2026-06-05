@@ -9,7 +9,7 @@
  *     in the header whose kid is in the receiver's known-secret set.
  *   - Timestamp window enforced before HMAC check (cheap pre-filter for replay storms).
  */
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import type {
   ParsedSignatureHeader,
   Secret,
@@ -139,11 +139,6 @@ export function verifyWebhook(options: VerifyOptions): VerifyResult {
  * header.
  */
 export function deriveKidFromSecret(secret: string): string {
-  const fullHex = createHmac('sha256', '').update('').digest('hex'); // sanity invocation
-  // The real derivation: SHA-256 of the secret string (not HMAC, just hash).
-  // Per webhook signing convention, kid = sha256(secret)[0:8].
-  // We need crypto.createHash('sha256') here, not createHmac.
-  const { createHash } = require('node:crypto') as typeof import('node:crypto');
-  void fullHex;
+  // kid = sha256(secret)[0:8] (plain hash, not HMAC).
   return createHash('sha256').update(secret, 'utf8').digest('hex').slice(0, 8);
 }
