@@ -20,6 +20,6 @@ The verifier (pass 4) recomputes the Merkle root from the in-band block range, v
 
 ### 8.5 Without an Anchor
 
-The chain is verifiable for integrity, lineage, and scope without any ANCHOR block (passes 1–3). The anchor strengthens temporal claims; it is not a prerequisite for the lineage property. v0.1 marks anchor as optional precisely because operators with strong internal time guarantees may defer QTSP procurement; the protocol still works.
+The chain is verifiable for integrity, lineage, scope, grounding, and delegator authority without any ANCHOR block (passes 1–3 and 5). The anchor strengthens temporal claims; it is not a prerequisite for the lineage property. v0.1 marks anchor as optional precisely because operators with strong internal time guarantees may defer QTSP procurement; the protocol still works.
 
 ---

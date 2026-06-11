@@ -1,7 +1,7 @@
 {
   "name": "@val-protocol/chain-verifier",
-  "version": "0.1.0",
-  "description": "Reference offline verifier for Verifiable Authorization Lineage (VAL). Zero runtime dependencies \u2014 pure SHA-256 against the canonical preimage specified in the VAL wire format. Verify chain integrity, lineage, and scope client-side without trusting the operator.",
+  "version": "0.2.0",
+  "description": "Reference offline verifier for Verifiable Authorization Lineage (VAL). Zero runtime dependencies — pure SHA-256 against the canonical preimage specified in the VAL wire format. Verify chain integrity, lineage, scope, grounding, and delegator authority client-side without trusting the operator.",
   "license": "Apache-2.0",
   "author": "RIGA <hello@riga.solutions>",
   "type": "module",

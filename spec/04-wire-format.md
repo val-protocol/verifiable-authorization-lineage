@@ -55,18 +55,21 @@ This is the sole canonical hash domain for VAL v0.1. There is **no per-block sig
 
 ### 4.4 Block Content (`canonical_details`)
 
-`canonical_details` is the RFC 8785 JCS serialization of a JSON object. Every VAL block carries `v` (schema version, `1`) and `block_type`; the remaining members are per type. A row whose content carries no `block_type` is a non-VAL event (operator-private or pre-VAL) and is skipped by the lineage / scope / grounding passes.
+`canonical_details` is the RFC 8785 JCS serialization of a JSON object. Every VAL block carries `v` (schema version — `1`, or `2` for ASSIGNMENT bodies carrying the §5.2 delegator-authority requirement) and `block_type`; the remaining members are per type. A row whose content carries no `block_type` is a non-VAL event (operator-private or pre-VAL) and is skipped by the lineage / scope / grounding / authority passes.
 
 **ASSIGNMENT** — the lineage root. No `parent_assignment_hash` (§5.1).
 ```json
 {
-  "v": 1,
+  "v": 2,
   "block_type": "ASSIGNMENT",
   "scope": { "act": ["read", "write"], "res": { "...": "..." } },
-  "human_attestation": { "method": "session", "subject_user_hash": "<hex>", "attested_at": 1700000000 }
+  "human_attestation": {
+    "method": "session", "subject_user_hash": "<hex>", "attested_at": 1700000000,
+    "delegator_authority": { "basis": "<tstr>", "capability": "<tstr>", "scope_ref": "<tstr>" }
+  }
 }
 ```
-`scope` is the §6 scope predicate (`act` = authorized action vocabulary; `res` = resource clause, incl. an optional `isolation_commitment`). `human_attestation` carries the Profile-A human designation (§5.2); its presence on a root ASSIGNMENT is what the verifier reads as the human binding under Profile A.
+`scope` is the §6 scope predicate (`act` = authorized action vocabulary; `res` = resource clause, incl. an optional `isolation_commitment`). `human_attestation` carries the Profile-A human designation (§5.2); its presence on a root ASSIGNMENT is what the verifier reads as the human binding under Profile A. `human_attestation.delegator_authority` records the authority basis under which the attesting human could grant the delegated scope (§5.2) — REQUIRED on `v: 2` bodies, checked by the verifier's Pass 5 (§7.2); its `signature` sub-field is RESERVED for the Profile B/C cryptographic binding and is absent under Profile A. `v: 1` ASSIGNMENT bodies predate the carrier and are legacy-tolerated; conforming producers MUST NOT emit new ones.
 
 **ACCESS** — a scoped read under an ASSIGNMENT.
 ```json

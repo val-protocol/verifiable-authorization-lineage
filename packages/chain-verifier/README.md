@@ -38,7 +38,7 @@ console.log(`verified ${rows.length} rows; chain intact.`);
 import { reconstructChainHash } from '@val-protocol/chain-verifier';
 
 const expected = reconstructChainHash({
-  scopeKey: 'b3873172-070a-4f77-8a6d-7c8d15e0beda',
+  scopeKey: '1f0ee1e2-6f2c-4f95-955b-5aa5270ce05c',
   sequenceNumber: 42,
   eventType: 'record.created',
   canonicalDetails: '{"actor":"system","resource_id":"…"}',
@@ -74,7 +74,34 @@ For each row in the slice:
 
 Returns the FIRST failure with a human-readable `reason`. Does not continue past first failure (so the `firstBadIndex` is unambiguous).
 
-The VAL passes 2 (lineage) and 3 (scope), plus the grounding re-derivation, are exposed via `verifyValChain` over the same `ChainRow[]`. See the [offline-verifier spec (§7)](https://github.com/val-protocol/verifiable-authorization-lineage/blob/main/spec/07-offline-verifier.md).
+The VAL passes 2 (lineage) and 3 (scope), plus the grounding re-derivation and pass 5 (delegator authority), are exposed via `verifyValChain` over the same `ChainRow[]`. See the [offline-verifier spec (§7)](https://github.com/val-protocol/verifiable-authorization-lineage/blob/main/spec/07-offline-verifier.md).
+
+### Delegator authority (pass 5, 0.2.0+)
+
+Every ASSIGNMENT body of version ≥ 2 must carry `human_attestation.delegator_authority` — the
+authority basis under which the issuing human could grant the delegated scope. Supply your
+operator's capability policy (a trust-anchor input you pin independently of the chain bytes,
+spec §7.1(d)) to have the verifier assert `scope.act ⊆ policy[capability]`:
+
+```ts
+import { verifyValChain } from '@val-protocol/chain-verifier';
+
+const result = verifyValChain(rows, {
+  delegatorAuthorityPolicy: {
+    // operator-namespaced capability → actions a holder may delegate
+    administrator: ['read', 'view', 'list', 'create', 'upload', 'send'],
+    read_only: ['read', 'view', 'list'],
+  },
+});
+// result.authority                          → 'green' | 'red' | 'none'
+// result.firstAuthorityViolation            → first escalation (e.g. a read-only
+//                                             delegator granting writes), or null
+// result.legacyPreAuthorityAssignmentCount  → v1 pre-carrier blocks (tolerated, counted)
+```
+
+Without the policy, pass 5 still hard-fails any v2 ASSIGNMENT missing the carrier; the
+subset check needs the policy. Pre-0.2.0 (v1) chains verify exactly as before, reporting
+`authority: 'none'` plus the legacy count.
 
 ## Partial-slice verification
 

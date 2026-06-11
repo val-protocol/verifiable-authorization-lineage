@@ -2,6 +2,11 @@
 
 All notable changes to the VAL reference packages (`@val-protocol/*`) are documented here. Packages follow [semantic versioning](https://semver.org/); the specification is versioned independently (currently draft v0.1).
 
+## [0.2.0] — 2026-06-11
+
+- **`@val-protocol/chain-verifier` 0.2.0** — Pass 5 (delegator authority): every ASSIGNMENT's delegated scope checked against the delegator's declared authority (`human_attestation.delegator_authority`, REQUIRED on v2 bodies; `scope.act ⊆ policy[capability]` with the §7.1(d) policy input; v1 pre-carrier bodies tolerated + counted; reserved `signature` sub-field = Profile B/C binding slot). Additive API — existing callers unaffected.
+- **Spec** — §4.4 ASSIGNMENT body v2 + `delegator_authority`; §5.2 delegator-authority definition with version gate; §7.1(d) delegator-authority policy input; §7.2 Pass 5; §7.3 `authority` + `legacyPreAuthorityAssignmentCount` report fields; §7.5 traceability row.
+
 ## [0.1.0] — 2026-06-04
 
 Initial public release of the VAL reference implementation under the `@val-protocol` scope.

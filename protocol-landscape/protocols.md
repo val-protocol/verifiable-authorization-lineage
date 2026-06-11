@@ -16,7 +16,7 @@ VAL is a **portable, independently verifiable record** of what a human authorize
 
 ## What VAL Adds to Any Stack
 
-**Operator-trustless verification.** The verifier re-derives integrity, lineage, scope-respect, and grounding from the chain bytes plus public trust anchors — **zero reads against the operator.** A regulator can replay a ten-year-old chain offline and reach the same verdict the operator would.
+**Operator-trustless verification.** The verifier re-derives integrity, lineage, scope-respect, grounding, and delegator authority from the chain bytes plus public trust anchors — **zero reads against the operator.** A regulator can replay a ten-year-old chain offline and reach the same verdict the operator would.
 
 **Human-rooted lineage.** Every non-root block must trace, by hash, to a human-signed root authorization. There is no "the agent says it was allowed" — the chain either walks back to a human root within scope, or it fails.
 

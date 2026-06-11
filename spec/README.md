@@ -70,7 +70,7 @@ The protocol defines five components, treated in detail in §§4–8:
 1. **Wire format** (§4) — RFC 8785 JSON-canonical (JCS) encoding of typed attestation blocks, with the chain hash computed over a deterministic pipe-delimited preimage. (A binary CBOR frame is recorded as a non-normative future direction; it is not part of v0.1.)
 2. **Lineage invariant** (§5) — structural rule that every non-assignment block carries a non-null parent assignment hash terminating, by recursion, at a human-signed root.
 3. **Scope predicate language** (§6) — small declarative grammar for expressing what an authorization permits, evaluable in linear time.
-4. **Offline verifier** (§7) — re-derives four properties from chain bytes (integrity, lineage, scope, grounding) and emits a verification report. The external-anchor pass (§8) is reserved — the ANCHOR block type is not yet implemented in the reference verifier.
+4. **Offline verifier** (§7) — re-derives five properties from chain bytes (integrity, lineage, scope, grounding, delegator authority) and emits a verification report. The external-anchor pass (§8) is reserved — the ANCHOR block type is not yet implemented in the reference verifier.
 5. **External anchor** (§8) — optional RFC 3161 timestamp over Merkle roots of contiguous block ranges, providing temporal proof that does not trust the operator's clock.
 
 ---

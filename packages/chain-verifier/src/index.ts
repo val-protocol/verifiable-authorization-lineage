@@ -242,11 +242,11 @@ export function verifyChain(rows: ChainRow[]): VerificationResult {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// VAL passes 2 (lineage) + 3 (scope). See spec/07-offline-verifier.md.
+// VAL passes 2 (lineage) + 3 (scope) + 5 (delegator authority). See spec/07-offline-verifier.md.
 // These consume the SAME ChainRow[] as verifyChain, parsing each row's
 // canonical_details as a VAL block body (the shape conforming producers emit; §4).
 // Rows whose canonical_details carry no `block_type` are non-VAL events (pre-VAL
-// or operator-private) and are skipped by passes 2/3.
+// or operator-private) and are skipped by passes 2/3/5.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** VAL scope predicate (§6.2). Only the fields the verifier evaluates are typed. */
@@ -263,13 +263,36 @@ export interface ScopePredicate {
   };
 }
 
+/**
+ * Delegator-authority carrier on an ASSIGNMENT's human_attestation (§5.2 / Pass 5).
+ * Records the authority basis under which the attesting human could grant the delegated
+ * scope. `signature` is the RESERVED Profile B/C binding slot — absent under Profile A,
+ * where the claim carries the profile's operator-attested residual trust.
+ */
+export interface ValBlockDelegatorAuthority {
+  basis?: string;
+  capability?: string;
+  scope_ref?: string;
+  signature?: unknown;
+}
+
+/**
+ * Capability → permitted-delegable-action policy, supplied to the verifier as a
+ * trust-anchor input (§7.1(d)) — obtained and pinned by the verifying party
+ * independently of the chain bytes, like the QTSP trust list. Operator-namespaced
+ * capability identifiers map to the action names a holder may delegate. Without it,
+ * Pass 5 still enforces carrier PRESENCE on v2 ASSIGNMENT bodies but cannot evaluate
+ * scope ⊆ authority.
+ */
+export type DelegatorAuthorityPolicy = Record<string, string[]>;
+
 /** A VAL block body, as carried in a ChainRow's canonical_details JSON. */
 export interface ValBlock {
   v?: number;
   block_type?: 'ASSIGNMENT' | 'ACCESS' | 'MUTATION' | 'CONSENT' | 'COMMUNICATION' | 'SETTLEMENT' | 'ANCHOR';
   // ASSIGNMENT:
   scope?: ScopePredicate;
-  human_attestation?: { method?: string } | null;
+  human_attestation?: { method?: string; delegator_authority?: ValBlockDelegatorAuthority } | null;
   parent_assignment_hash?: string | null;
   // action blocks:
   action?: string;
@@ -287,11 +310,25 @@ export interface ValVerificationResult {
   scope: 'green' | 'red';
   /** Property #4 (grounding) re-derived from chain bytes — independent of substrate enforcement. */
   grounding: 'green' | 'red';
+  /**
+   * Pass 5 (delegator authority, §7.2): every v2 ASSIGNMENT body must carry
+   * `human_attestation.delegator_authority`; with a policy supplied (§7.1(d)), the
+   * delegated scope.act must be ⊆ the delegator capability's delegable actions.
+   * `none` = no ASSIGNMENT in the verified slice engaged the pass.
+   */
+  authority: 'green' | 'red' | 'none';
   /** Conformance profile read from the root ASSIGNMENTs (§5.2). */
   conformanceProfile: 'A' | 'B' | 'C' | 'unknown';
   firstLineageViolation: { sequenceNumber: string; reason: string } | null;
   firstScopeViolation: { sequenceNumber: string; reason: string } | null;
   firstGroundingViolation: { sequenceNumber: string; reason: string } | null;
+  firstAuthorityViolation: { sequenceNumber: string; reason: string } | null;
+  /**
+   * Pre-carrier (v1) ASSIGNMENT bodies lacking delegator_authority — tolerated (chain
+   * bytes are immutable) but counted, so a report states exactly how much of the chain
+   * predates the carrier. Conforming producers MUST NOT emit new v1 ASSIGNMENT bodies.
+   */
+  legacyPreAuthorityAssignmentCount: number;
   /** Count of rows that are not VAL blocks (no block_type) — informational. */
   nonValBlockCount: number;
 }
@@ -379,24 +416,34 @@ function satisfies(block: ValBlock, scope: ScopePredicate): { ok: boolean; reaso
 }
 
 /**
- * VAL offline verifier (§7.2 passes 1–3) over a single scope's ChainRow slice.
+ * VAL offline verifier (§7.2 passes 1–3 + 5) over a single scope's ChainRow slice.
  * Pass 1 reuses verifyChain (integrity). Pass 2 walks every action block's lineage
  * to a human-rooted ASSIGNMENT. Pass 3 evaluates §6.6 satisfaction (incl. the §6.4
  * Merkle isolation check) against the effective scope (intersection over the lineage
  * path — an action must satisfy every ASSIGNMENT scope on its path). Pass 4 (anchor)
- * is out of scope here. Input MUST be the same partitioned, sorted, contiguous slice
- * verifyChain requires.
+ * is out of scope here. Pass 5 (delegator authority) checks every ASSIGNMENT's
+ * delegated scope against its delegator's declared authority — carrier REQUIRED on
+ * v2 bodies, scope.act ⊆ policy[capability] when `options.delegatorAuthorityPolicy`
+ * (the §7.1(d) trust-anchor input) is supplied. `options` is additive; existing
+ * callers are unaffected. Input MUST be the same partitioned, sorted, contiguous
+ * slice verifyChain requires.
  */
-export function verifyValChain(rows: ChainRow[]): ValVerificationResult {
+export function verifyValChain(
+  rows: ChainRow[],
+  options?: { delegatorAuthorityPolicy?: DelegatorAuthorityPolicy },
+): ValVerificationResult {
   const result: ValVerificationResult = {
     integrity: 'green',
     lineage: 'green',
     scope: 'green',
     grounding: 'green',
+    authority: 'none',
     conformanceProfile: 'unknown',
     firstLineageViolation: null,
     firstScopeViolation: null,
     firstGroundingViolation: null,
+    firstAuthorityViolation: null,
+    legacyPreAuthorityAssignmentCount: 0,
     nonValBlockCount: 0,
   };
 
@@ -492,6 +539,45 @@ export function verifyValChain(rows: ChainRow[]): ValVerificationResult {
         }
       }
     } else if (isAssignment) {
+      // ── Pass 5 — delegator authority (§7.2). Applies to EVERY ASSIGNMENT, root or
+      // sub, whatever surface minted it. v2 bodies REQUIRE the carrier; v1 bodies without
+      // it are pre-carrier legacy (tolerated, counted). With the §7.1(d) policy supplied,
+      // the delegated scope.act must be ⊆ what the delegator's capability may delegate. ──
+      {
+        const da = block.human_attestation?.delegator_authority;
+        const v = block.v ?? 1;
+        if (!da) {
+          if (v >= 2) {
+            result.authority = 'red';
+            if (!result.firstAuthorityViolation) {
+              result.firstAuthorityViolation = { sequenceNumber: seqStr, reason: `v${v} ASSIGNMENT lacks human_attestation.delegator_authority (required as of v2)` };
+            }
+          } else {
+            result.legacyPreAuthorityAssignmentCount++;
+          }
+        } else {
+          if (result.authority === 'none') result.authority = 'green';
+          const policy = options?.delegatorAuthorityPolicy;
+          if (policy) {
+            const permitted = policy[da.capability ?? ''];
+            const acts = block.scope?.act ?? [];
+            if (!permitted) {
+              result.authority = 'red';
+              if (!result.firstAuthorityViolation) {
+                result.firstAuthorityViolation = { sequenceNumber: seqStr, reason: `unknown delegator capability '${da.capability ?? '(none)'}' — scope ⊆ authority not evaluable` };
+              }
+            } else {
+              const exceeded = acts.filter((a) => !permitted.includes(a));
+              if (exceeded.length > 0) {
+                result.authority = 'red';
+                if (!result.firstAuthorityViolation) {
+                  result.firstAuthorityViolation = { sequenceNumber: seqStr, reason: `scope.act [${exceeded.join(',')}] exceeds capability '${da.capability}' delegable set (authority escalation)` };
+                }
+              }
+            }
+          }
+        }
+      }
       // Root ASSIGNMENT must be human-rooted; sub-ASSIGNMENT must walk to one.
       if (block.parent_assignment_hash) {
         const walk = walkLineage(block.parent_assignment_hash, index);

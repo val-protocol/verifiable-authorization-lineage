@@ -20,7 +20,7 @@ When a professional delegates work to an AI agent — or simply acts inside a re
 
 ## What VAL Does
 
-VAL records every action as a typed **block** in an append-only, hash-chained **lineage**. Every non-root block must trace, cryptographically, back to a **human-signed root authorization** carrying a machine-checkable **scope predicate** (what the authorization permits). A standalone **offline verifier** re-derives four properties — **integrity, lineage, scope-respect, and grounding** — from the chain bytes plus a small set of public trust anchors, with **zero reads against the operator**. An optional **external anchor** (RFC 3161 / eIDAS QTSP) provides independent timestamping.
+VAL records every action as a typed **block** in an append-only, hash-chained **lineage**. Every non-root block must trace, cryptographically, back to a **human-signed root authorization** carrying a machine-checkable **scope predicate** (what the authorization permits). A standalone **offline verifier** re-derives five properties — **integrity, lineage, scope-respect, grounding, and delegator authority** (the issuing human's standing to grant the delegated scope) — from the chain bytes plus a small set of public trust anchors, with **zero reads against the operator**. An optional **external anchor** (RFC 3161 / eIDAS QTSP) provides independent timestamping.
 
 **In scope:** the canonical wire format for attestation blocks; the lineage invariant (every non-assignment block traces to a human-signed root); a minimal scope-predicate language; the offline verifier procedure; the optional external timestamp anchor; six action classes (read, write, assign, sign, send, settle).
 
@@ -33,7 +33,7 @@ VAL records every action as a typed **block** in an append-only, hash-chained **
 - **ASSIGNMENT** roots a lineage in a human-signed authorization with a scope predicate.
 - **ACCESS / MUTATION** (and CONSENT / COMMUNICATION / SETTLEMENT) record actions that must reference a parent assignment — satisfied by *lineage + action + container*, or by a Merkle **membership proof** for isolation-scoped reads.
 - **ANCHOR** periodically commits the chain head to an external timestamp authority.
-- The **[offline verifier](spec/07-offline-verifier.md)** walks the chain, recomputes the hashes, checks the lineage to a human root, evaluates the scope predicates, and reports a **conformance profile** (A: operator-attested → B/C: human-signed) so consumers interpret the residual-trust statement correctly.
+- The **[offline verifier](spec/07-offline-verifier.md)** walks the chain, recomputes the hashes, checks the lineage to a human root, evaluates the scope predicates, checks each ASSIGNMENT's delegated scope against its issuer's **declared authority** (so a read-only delegator cannot have granted writes), and reports a **conformance profile** (A: operator-attested → B/C: human-signed) so consumers interpret the residual-trust statement correctly.
 
 ## VAL in the Protocol Landscape
 
@@ -59,7 +59,7 @@ The reference packages live under [`packages/`](packages/) (Apache-2.0, publishe
 
 | Package | Purpose |
 |---|---|
-| [`chain-verifier`](packages/chain-verifier) | the offline verifier — zero runtime dependencies, pure SHA-256 against the canonical preimage; implements passes 1–3 (integrity, lineage, scope) plus the grounding re-derivation, emitting conformance profile A |
+| [`chain-verifier`](packages/chain-verifier) | the offline verifier — zero runtime dependencies, pure SHA-256 against the canonical preimage; implements passes 1–3 (integrity, lineage, scope) plus the grounding re-derivation and pass 5 (delegator authority, §7.2), emitting conformance profile A |
 | [`webhook-receiver`](packages/webhook-receiver) | reference receiver for signed chain-event webhooks — HMAC verification, rotation grace, replay protection, chain-link extraction. Delivery transport tooling (transport is §1.2 out-of-scope for the normative protocol) |
 
 The verifier is transport- and producer-agnostic: it consumes exported chain bytes and re-derives the protocol's properties without contacting any operator. Chain producers and API clients are deployment-specific and live with each operator's stack, not in this protocol repository.
