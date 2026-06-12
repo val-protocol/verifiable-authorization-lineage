@@ -45,7 +45,7 @@
     "build": "rm -rf dist && tsc -p tsconfig.json && tsc -p tsconfig.cjs.json && node -e \"require('fs').writeFileSync('dist/cjs/package.json', JSON.stringify({type:'commonjs'}))\"",
     "type-check": "tsc -p tsconfig.json --noEmit",
     "test": "node --test",
-    "prepublishOnly": "npm run build && ../../scripts/verify-esm-extensions.sh"
+    "prepublishOnly": "node ../../scripts/verify-example-ids.mjs && npm run build && ../../scripts/verify-esm-extensions.sh"
   },
   "dependencies": {},
   "devDependencies": {

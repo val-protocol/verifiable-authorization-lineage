@@ -1,0 +1,16 @@
+{
+  "__doc": [
+    "Synthetic example-UUID registry — the publish-surface leak gate's allowlist.",
+    "Every real-shape UUID in this repository (all of it is public + npm-published)",
+    "MUST be listed here, or scripts/verify-example-ids.mjs fails CI and prepublish.",
+    "To add an example id: mint a fresh random UUID (`uuidgen`), confirm it references",
+    "no real system, register it with a one-line use note. NEVER copy an identifier",
+    "out of a real request, response, webhook delivery, or operator fixture flow —",
+    "operator-substrate ids are real by construction and leak (one reached the npm",
+    "0.1.0 README; replaced + gated 2026-06-11)."
+  ],
+  "ids": {
+    "1f0ee1e2-6f2c-4f95-955b-5aa5270ce05c": "scopeKey example — packages/chain-verifier/README.md",
+    "e33143e3-7a34-42b6-98f6-e2576d988de4": "dataroom-id example — packages/chain-verifier-cli/README.md"
+  }
+}

@@ -103,6 +103,15 @@ Without the policy, pass 5 still hard-fails any v2 ASSIGNMENT missing the carrie
 subset check needs the policy. Pre-0.2.0 (v1) chains verify exactly as before, reporting
 `authority: 'none'` plus the legacy count.
 
+**Trust boundary (read before citing pass-5 results):** pass 5 verifies the authority claim's
+*internal consistency* — the recorded capability could grant the delegated scope, against a
+policy YOU pin independently of the chain bytes (§7.1(d)); never accept a policy handed to you
+by the operator at verification time. It does **not** cryptographically prove the named human
+held that capability: under Profile A the carrier is operator-attested, and that residual trust
+is the profile's, not the pass's. The cryptographic binding is the carrier's reserved
+`signature` sub-field (Profiles B/C, spec §5.2) — until an operator ships it, no pass-5 result
+should be described as "trustless authority verification."
+
 ## Partial-slice verification
 
 A slice that does NOT include the genesis row can still be verified — only the genesis invariant (step 1) is skipped. The caller is responsible for trusting the slice's starting row (e.g., from an externally-anchored sequence_number, or by independent verification of an earlier overlapping slice).

@@ -36,7 +36,7 @@
     "build": "rm -rf dist && tsc -p tsconfig.json && chmod +x dist/cli.js",
     "type-check": "tsc -p tsconfig.json --noEmit",
     "test": "node --test",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "node ../../scripts/verify-example-ids.mjs && npm run build"
   },
   "dependencies": {
     "@val-protocol/chain-verifier": "^0.2.0"
