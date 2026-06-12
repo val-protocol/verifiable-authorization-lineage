@@ -1,0 +1,54 @@
+{
+  "name": "@val-protocol/chain-verifier-cli",
+  "version": "0.2.0",
+  "description": "CLI wrapper for @val-protocol/chain-verifier — one-command offline verification of a VAL audit.export NDJSON chain, from a local file or directly from a VAL operator backend via the MCP audit.export tool.",
+  "license": "Apache-2.0",
+  "author": "RIGA <hello@riga.solutions>",
+  "type": "module",
+  "bin": {
+    "val-verify": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "keywords": [
+    "val",
+    "hash-chain",
+    "audit",
+    "ndjson",
+    "verifier",
+    "cli"
+  ],
+  "homepage": "https://github.com/val-protocol/verifiable-authorization-lineage/tree/main/packages/chain-verifier-cli",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/val-protocol/verifiable-authorization-lineage.git",
+    "directory": "packages/chain-verifier-cli"
+  },
+  "bugs": {
+    "url": "https://github.com/val-protocol/verifiable-authorization-lineage/issues"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.json && chmod +x dist/cli.js",
+    "type-check": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@val-protocol/chain-verifier": "^0.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
