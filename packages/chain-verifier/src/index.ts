@@ -292,7 +292,7 @@ export interface ValBlock {
   block_type?: 'ASSIGNMENT' | 'ACCESS' | 'MUTATION' | 'CONSENT' | 'COMMUNICATION' | 'SETTLEMENT' | 'ANCHOR';
   // ASSIGNMENT:
   scope?: ScopePredicate;
-  human_attestation?: { method?: string; delegator_authority?: ValBlockDelegatorAuthority } | null;
+  human_attestation?: { method?: string; subject_user_hash?: string; delegator_authority?: ValBlockDelegatorAuthority } | null;
   parent_assignment_hash?: string | null;
   // action blocks:
   action?: string;
@@ -424,9 +424,13 @@ function satisfies(block: ValBlock, scope: ScopePredicate): { ok: boolean; reaso
  * is out of scope here. Pass 5 (delegator authority) checks every ASSIGNMENT's
  * delegated scope against its delegator's declared authority — carrier REQUIRED on
  * v2 bodies, scope.act ⊆ policy[capability] when `options.delegatorAuthorityPolicy`
- * (the §7.1(d) trust-anchor input) is supplied. `options` is additive; existing
- * callers are unaffected. Input MUST be the same partitioned, sorted, contiguous
- * slice verifyChain requires.
+ * (the §7.1(d) trust-anchor input) is supplied. As of v0.3.0 the well-known
+ * `container_owner` basis is additionally re-derived from chain bytes where the
+ * chain permits: scope_ref must equal the ASSIGNMENT's scope.res.in_workspace, and
+ * a `user:`-principal COMMUNICATION rooted in it must hash to the attested
+ * subject_user_hash (an `agent:` principal carries the Profile-A residual instead).
+ * `options` is additive; existing callers are unaffected. Input MUST be the same
+ * partitioned, sorted, contiguous slice verifyChain requires.
  */
 export function verifyValChain(
   rows: ChainRow[],
@@ -508,6 +512,38 @@ export function verifyValChain(
         }
       }
 
+      // ── Pass 5 (v0.3.0) — `container_owner` ownership re-derivation, chain bytes only.
+      // A COMMUNICATION rooted directly in a `container_owner` ASSIGNMENT and performed
+      // by a human (`user:` principal) must be performed by the attested owner:
+      // sha256(<principal user id>) must equal the root's human_attestation
+      // .subject_user_hash. An `agent:` principal has no second chain occurrence of the
+      // delegating human to cross-check — it carries the Profile-A operator-attested
+      // residual, like every other basis. ──
+      if (block.block_type === 'COMMUNICATION' && block.parent_assignment_hash) {
+        const parent = index.get(block.parent_assignment_hash);
+        const pda = parent?.human_attestation?.delegator_authority;
+        if (
+          parent?.block_type === 'ASSIGNMENT' &&
+          pda?.basis === 'container_owner' &&
+          typeof block.principal === 'string' &&
+          block.principal.startsWith('user:')
+        ) {
+          const subjectHash = parent.human_attestation?.subject_user_hash;
+          const principalHash = createHash('sha256')
+            .update(block.principal.slice('user:'.length), 'utf8')
+            .digest('hex');
+          if (!subjectHash || principalHash !== subjectHash) {
+            result.authority = 'red';
+            if (!result.firstAuthorityViolation) {
+              result.firstAuthorityViolation = {
+                sequenceNumber: seqStr,
+                reason: `container_owner COMMUNICATION principal '${block.principal}' is not the attested container owner (sha256(principal id) != subject_user_hash)`,
+              };
+            }
+          }
+        }
+      }
+
       // ── Property #4 (grounding, §7.5) — domain-neutral read-before-derive. Walking in sequence
       // order, record each ACCESS's content-hash under its principal; a later MUTATION that cites
       // grounded_document_hashes must cite content the SAME principal already read in this chain.
@@ -557,6 +593,21 @@ export function verifyValChain(
           }
         } else {
           if (result.authority === 'none') result.authority = 'green';
+          // `container_owner` basis (v0.3.0): chain-internal consistency, policy-
+          // independent like carrier presence — the claimed authority must be scoped
+          // to the very container this ASSIGNMENT scopes (§7.2 Pass 5).
+          if (da.basis === 'container_owner') {
+            const ws = (block.scope?.res?.in_workspace as string | null | undefined) ?? null;
+            if (!da.scope_ref || da.scope_ref !== ws) {
+              result.authority = 'red';
+              if (!result.firstAuthorityViolation) {
+                result.firstAuthorityViolation = {
+                  sequenceNumber: seqStr,
+                  reason: `container_owner scope_ref '${da.scope_ref ?? '(none)'}' != ASSIGNMENT scope.res.in_workspace '${ws ?? '(none)'}'`,
+                };
+              }
+            }
+          }
           const policy = options?.delegatorAuthorityPolicy;
           if (policy) {
             const permitted = policy[da.capability ?? ''];

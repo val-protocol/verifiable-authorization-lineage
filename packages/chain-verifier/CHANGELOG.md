@@ -1,5 +1,33 @@
 # @val-protocol/chain-verifier — CHANGELOG
 
+## 0.3.0 — 2026-06-11
+
+### Features
+
+- **Pass 5 — `container_owner` basis re-derived from chain bytes (spec §7.2).** The
+  well-known `container_owner` basis records ownership of a from-scratch,
+  participant-less container as the delegator's standing. Where the chain carries the
+  material, the claim is now DERIVED, not trusted:
+  - `delegator_authority.scope_ref` must equal the ASSIGNMENT's
+    `scope.res.in_workspace` (chain-internal consistency; policy-independent, like
+    carrier presence). Mismatch ⇒ `authority: red`.
+  - A COMMUNICATION rooted directly in a `container_owner` ASSIGNMENT and performed
+    by a human (`user:<id>` principal) must be performed by the attested owner:
+    `sha256(<id>)` must equal the root's `human_attestation.subject_user_hash`.
+    Mismatch ⇒ `authority: red`.
+  - An `agent:` principal has no second chain occurrence of the delegating human to
+    cross-check — it carries the Profile-A operator-attested residual, like every
+    other basis (the reserved `signature` slot is the Profile B/C upgrade).
+- `ValBlock.human_attestation` type now includes `subject_user_hash`.
+
+### Compatibility
+
+- Additive only. The new checks fire exclusively on `basis: 'container_owner'`,
+  which no chain emitted before this release; all existing chains and call shapes
+  verify exactly as before. Operators adopting the basis must also ship the
+  matching §7.1(d) policy row (e.g. `container_owner → ['send']`) to their
+  verifying parties — an unknown capability remains `authority: red`.
+
 ## 0.2.0 — 2026-06-11
 
 ### Features

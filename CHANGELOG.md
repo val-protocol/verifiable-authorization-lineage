@@ -2,6 +2,11 @@
 
 All notable changes to the VAL reference packages (`@val-protocol/*`) are documented here. Packages follow [semantic versioning](https://semver.org/); the specification is versioned independently (currently draft v0.1).
 
+## [0.3.0] — 2026-06-11
+
+- **`@val-protocol/chain-verifier` 0.3.0** — Pass 5: the reserved `container_owner` basis is re-derived from chain bytes where the chain permits (`scope_ref == scope.res.in_workspace`, policy-independent; a rooted COMMUNICATION's `user:` principal must hash to the attested `subject_user_hash`; `agent:` principals carry the Profile-A residual). Additive — the checks fire only on a basis no prior chain emitted.
+- **Spec** — §7.2 Pass 5: reserved well-known basis `container_owner` with its two chain-byte re-derivations; §7.5 traceability row updated.
+
 ## [0.2.0] — 2026-06-11
 
 - **`@val-protocol/chain-verifier` 0.2.0** — Pass 5 (delegator authority): every ASSIGNMENT's delegated scope checked against the delegator's declared authority (`human_attestation.delegator_authority`, REQUIRED on v2 bodies; `scope.act ⊆ policy[capability]` with the §7.1(d) policy input; v1 pre-carrier bodies tolerated + counted; reserved `signature` sub-field = Profile B/C binding slot). Additive API — existing callers unaffected.

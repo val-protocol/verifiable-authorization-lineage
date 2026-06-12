@@ -112,6 +112,13 @@ is the profile's, not the pass's. The cryptographic binding is the carrier's res
 `signature` sub-field (Profiles B/C, spec §5.2) — until an operator ships it, no pass-5 result
 should be described as "trustless authority verification."
 
+One basis is stronger: for the reserved `container_owner` basis (spec §7.2, v0.3.0), two
+sub-claims ARE re-derived from chain bytes alone — `scope_ref` must equal the ASSIGNMENT's
+`scope.res.in_workspace`, and a human-performed COMMUNICATION rooted in it must hash
+(`sha256` of the `user:` principal id) to the attested `subject_user_hash`. Those two
+mismatches are detected without trusting the operator; the rest of the basis carries the
+same Profile-A residual as above.
+
 ## Partial-slice verification
 
 A slice that does NOT include the genesis row can still be verified — only the genesis invariant (step 1) is skipped. The caller is responsible for trusting the slice's starting row (e.g., from an externally-anchored sequence_number, or by independent verification of an earlier overlapping slice).
