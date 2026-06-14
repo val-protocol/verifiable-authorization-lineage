@@ -18,7 +18,7 @@
  * contract is "verify these rows against the preimage construction in §4."
  */
 
-import { createHash } from 'crypto';
+import { createHash, createPublicKey, createVerify } from 'crypto';
 
 /** One row of a chain, in the shape required for verification. */
 export interface ChainRow {
@@ -263,17 +263,214 @@ export interface ScopePredicate {
   };
 }
 
+/** Identity-assurance basis of a self-attested signing key (§5.2). `source` widens with the
+ *  profile ladder: `self_asserted`/`kyb_attested` (Profile A/B claim basis) → `eidas_eaa`/`qes`
+ *  (Profile C, qualified). The verifier surfaces it verbatim; it never rounds a claim up. */
+export interface ValIdentityAssurance {
+  source: string;
+  subject_claim: string;
+}
+
+/** Hardware binding of an enrolled key, bound into the org-root self-attestation so it is
+ *  tamper-evident. `device_bound` = single secure element; `syncable` = account-bound /
+ *  multi-device (weaker hardware assurance). Surfaced verbatim — never rounded up. */
+export type ValKeyBinding = 'device_bound' | 'syncable';
+
+/** A Profile B/C delegator signature carried in `delegator_authority.signature` (and in the
+ *  org-root `self_signature`). `alg` selects the verification + profile: `webauthn` → Profile B
+ *  (device assertion, verified here); a qualified alg (`qes`/`eidas_qes`/`eidas_eaa`) → Profile C
+ *  (qualified e-signature, verified against a QTSP trust list — a future trust-anchor input,
+ *  classified here so C requires no shape change). Base64 fields accept base64 or base64url. */
+export interface ValDelegatorSignature {
+  alg: string;
+  public_key: string; // SPKI base64 (the key that signed)
+  signature: string; // base64
+  client_data_json: string; // base64 (WebAuthn clientDataJSON)
+  authenticator_data: string; // base64 (WebAuthn authenticatorData)
+  credential_id?: string;
+}
+
+/** The enrolled org-root self-attestation embedded in a Profile B/C grant so the verifier can
+ *  chain `signature.public_key → this enrolled key → self-attested {org, identity, key_binding}`
+ *  entirely from chain bytes. The self_signature signs `orgRootBindingChallenge(...)`, which is
+ *  re-derivable from these fields — so relabeling `key_binding` or `identity_assurance` breaks it. */
+export interface ValOrgRootAttestation {
+  org_id: string;
+  signatory_identity_hash: string;
+  public_key: string; // SPKI base64 — the enrolled org-root key
+  identity_assurance: ValIdentityAssurance;
+  key_binding: ValKeyBinding;
+  self_signature: ValDelegatorSignature;
+}
+
 /**
  * Delegator-authority carrier on an ASSIGNMENT's human_attestation (§5.2 / Pass 5).
  * Records the authority basis under which the attesting human could grant the delegated
- * scope. `signature` is the RESERVED Profile B/C binding slot — absent under Profile A,
- * where the claim carries the profile's operator-attested residual trust.
+ * scope. `signature` is the Profile B/C binding slot — absent under Profile A (operator-
+ * attested residual trust); present + verified under B (device assertion) / C (qualified).
+ * `org_root` carries the self-attestation the signature chains to (Profile B/C linkage).
  */
 export interface ValBlockDelegatorAuthority {
   basis?: string;
   capability?: string;
   scope_ref?: string;
-  signature?: unknown;
+  signature?: ValDelegatorSignature;
+  org_root?: ValOrgRootAttestation;
+}
+
+// ── Profile B/C signature verification (offline, chain-bytes only) ─────────────
+// Ported from the producer's reference signing path. Zero new deps (Node `crypto`).
+// What is checked OFFLINE here:
+//   - The org-root self-attestation: its self_signature signs a challenge re-derived
+//     from {org_id, signatory_identity_hash, public_key, identity_assurance, key_binding}
+//     (orgRootBindingChallenge) — fully chain-derivable, so the device_bound/syncable
+//     binding + self_asserted subject are tamper-evident.
+//   - The delegation signature is a cryptographically valid WebAuthn assertion whose key
+//     EQUALS the enrolled org-root key (the grant was signed by the org root).
+// NOT checked here (documented limitation): that the delegation challenge binds to a
+// specific grant payload — that requires the operator's grant-payload canonicalization as
+// a trust-anchor input (like the §7.1(d) policy / QTSP list), a future strengthening. The
+// device-bound/syncable org-root verdict does NOT depend on it.
+
+/** Decode base64 OR base64url to a Buffer. */
+function b64ToBuf(s: string): Buffer {
+  return Buffer.from(s.replace(/-/g, '+').replace(/_/g, '/'), 'base64');
+}
+function toB64Url(b: Buffer): string {
+  return b.toString('base64').replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
+}
+function normB64Url(s: string): string {
+  return s.replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
+}
+/** Normalize a key to compare regardless of base64/base64url encoding. */
+function normKey(spkiB64: string): string {
+  return b64ToBuf(spkiB64).toString('base64');
+}
+
+/** Minimal RFC 8785 (JCS) canonical JSON: keys sorted by UTF-16 code unit (JS default
+ *  sort, = JCS §3.2.3), leaf primitives via JSON.stringify. Matches the producer's
+ *  canonicalJsonStringify for the identifier/string/bool/null vocabulary used here. */
+function jcs(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return '[' + value.map(jcs).join(',') + ']';
+  const obj = value as Record<string, unknown>;
+  const keys = Object.keys(obj).sort();
+  return '{' + keys.map((k) => JSON.stringify(k) + ':' + jcs(obj[k])).join(',') + '}';
+}
+
+/** The challenge the org-root self-attestation signs — re-derivable by any verifier from
+ *  the attestation fields (so key_binding / identity cannot be relabeled without breaking it). */
+export function orgRootBindingChallenge(o: ValOrgRootAttestation): string {
+  return toB64Url(
+    createHash('sha256')
+      .update(
+        jcs({
+          identity_assurance: {
+            source: o.identity_assurance.source,
+            subject_claim: o.identity_assurance.subject_claim,
+          },
+          key_binding: o.key_binding,
+          org_id: o.org_id,
+          public_key: o.public_key,
+          signatory_identity_hash: o.signatory_identity_hash,
+        }),
+      )
+      .digest(),
+  );
+}
+
+/** Verify a WebAuthn (ES256) delegator assertion against its embedded public key. When
+ *  `expectedChallengeB64Url` is given, also require clientDataJSON.challenge to match it. */
+export function verifyDelegatorSignature(
+  sig: ValDelegatorSignature,
+  expectedChallengeB64Url?: string,
+): { valid: boolean; reason: string } {
+  try {
+    if (!sig || sig.alg !== 'webauthn') return { valid: false, reason: `unsupported alg: ${sig?.alg}` };
+    const clientDataJson = b64ToBuf(sig.client_data_json);
+    let clientData: { type?: string; challenge?: string };
+    try {
+      clientData = JSON.parse(clientDataJson.toString('utf8'));
+    } catch {
+      return { valid: false, reason: 'clientDataJSON not parseable' };
+    }
+    if (clientData.type !== 'webauthn.get') return { valid: false, reason: `clientData.type=${clientData.type}` };
+    if (expectedChallengeB64Url !== undefined) {
+      if (!clientData.challenge || normB64Url(clientData.challenge) !== normB64Url(expectedChallengeB64Url)) {
+        return { valid: false, reason: 'challenge mismatch (signature is for a different statement)' };
+      }
+    }
+    const authData = b64ToBuf(sig.authenticator_data);
+    const cdjHash = createHash('sha256').update(clientDataJson).digest();
+    const signedBytes = Buffer.concat([authData, cdjHash]);
+    const pubKey = createPublicKey({ key: b64ToBuf(sig.public_key), format: 'der', type: 'spki' });
+    const ok = createVerify('sha256').update(signedBytes).verify({ key: pubKey, dsaEncoding: 'der' }, b64ToBuf(sig.signature));
+    return ok
+      ? { valid: true, reason: 'signature valid against embedded public key' }
+      : { valid: false, reason: 'signature does not verify against embedded public key' };
+  } catch (e) {
+    return { valid: false, reason: `verify error: ${(e as Error).message}` };
+  }
+}
+
+/** Map a signature's `alg` to its conformance profile (§5.2). Data-driven so Profile C
+ *  (qualified e-signatures) is classified without a code change — only its QTSP-anchored
+ *  crypto verification is a future addition. */
+const QUALIFIED_ALGS = new Set(['qes', 'eidas_qes', 'eidas_eaa']);
+
+export type TrustChainOutcome =
+  | 'authority_verified_org_root_device_bound'
+  | 'authority_verified_org_root_syncable'
+  | 'signature_valid_only'
+  | 'qualified_unverified'
+  | 'invalid';
+
+/** Verify a Profile B/C delegation: the signature is a valid assertion by the enrolled,
+ *  self-attested org-root key. Returns the honest outcome (device_bound vs syncable, or
+ *  signature_valid_only when the org-root linkage is absent/broken). */
+export function verifyDelegationTrustChain(
+  delegationSig: ValDelegatorSignature,
+  orgRoot?: ValOrgRootAttestation | null,
+): {
+  signatureValid: boolean;
+  linkageVerified: boolean;
+  outcome: TrustChainOutcome;
+  keyBinding: ValKeyBinding | null;
+  subjectAssurance: ValIdentityAssurance | null;
+  reason: string;
+} {
+  const base = { keyBinding: null as ValKeyBinding | null, subjectAssurance: null as ValIdentityAssurance | null };
+  // Profile C (qualified) — classified, but its QTSP-anchored verification is a future
+  // trust-anchor input. Surface honestly rather than silently passing or failing.
+  if (QUALIFIED_ALGS.has(delegationSig?.alg)) {
+    return { ...base, signatureValid: false, linkageVerified: false, outcome: 'qualified_unverified', reason: `qualified alg '${delegationSig.alg}' requires a QTSP trust list (not supplied) — Profile C classified, not verified` };
+  }
+  const sigCheck = verifyDelegatorSignature(delegationSig);
+  if (!sigCheck.valid) {
+    return { ...base, signatureValid: false, linkageVerified: false, outcome: 'invalid', reason: `delegation signature invalid: ${sigCheck.reason}` };
+  }
+  const notLinked = (reason: string) => ({ ...base, signatureValid: true, linkageVerified: false, outcome: 'signature_valid_only' as const, reason });
+  if (!orgRoot) return notLinked('signature valid; no org-root attestation embedded');
+  if (!orgRoot.identity_assurance || (orgRoot.key_binding !== 'device_bound' && orgRoot.key_binding !== 'syncable')) {
+    return notLinked('org-root attestation missing identity_assurance / key_binding');
+  }
+  const selfCheck = verifyDelegatorSignature(orgRoot.self_signature, orgRootBindingChallenge(orgRoot));
+  if (!selfCheck.valid) return notLinked(`org-root self-attestation invalid: ${selfCheck.reason}`);
+  if (normKey(orgRoot.self_signature.public_key) !== normKey(orgRoot.public_key)) {
+    return notLinked('org-root attestation is not self-signed (attesting key != attested key)');
+  }
+  if (normKey(delegationSig.public_key) !== normKey(orgRoot.public_key)) {
+    return notLinked('delegation signed by a key that is not the enrolled org-root key');
+  }
+  const syncable = orgRoot.key_binding === 'syncable';
+  return {
+    signatureValid: true,
+    linkageVerified: true,
+    outcome: syncable ? 'authority_verified_org_root_syncable' : 'authority_verified_org_root_device_bound',
+    keyBinding: orgRoot.key_binding,
+    subjectAssurance: { source: orgRoot.identity_assurance.source, subject_claim: orgRoot.identity_assurance.subject_claim },
+    reason: `delegation key chains to the enrolled, self-attested org-root key (${syncable ? 'syncable — weaker hardware assurance' : 'device-bound'}); subject "${orgRoot.identity_assurance.subject_claim}" is ${orgRoot.identity_assurance.source}`,
+  };
 }
 
 /**
@@ -317,12 +514,23 @@ export interface ValVerificationResult {
    * `none` = no ASSIGNMENT in the verified slice engaged the pass.
    */
   authority: 'green' | 'red' | 'none';
-  /** Conformance profile read from the root ASSIGNMENTs (§5.2). */
+  /**
+   * Profile B/C signature pass (§5.2): a present `delegator_authority.signature` is a valid
+   * device/qualified assertion chaining to the enrolled, self-attested org-root key.
+   * `none` = no ASSIGNMENT carried a signature (Profile A); `green` = all present signatures
+   * verified + linked; `red` = a present signature failed to verify or link.
+   */
+  signature: 'green' | 'red' | 'none';
+  /** The verified hardware binding of the org-root key (when a Profile-B linkage held).
+   *  Surfaced verbatim — `syncable` is never reported as `device_bound`. */
+  keyBinding: ValKeyBinding | null;
+  /** Conformance profile read from the root ASSIGNMENTs (§5.2): highest of A/B/C present. */
   conformanceProfile: 'A' | 'B' | 'C' | 'unknown';
   firstLineageViolation: { sequenceNumber: string; reason: string } | null;
   firstScopeViolation: { sequenceNumber: string; reason: string } | null;
   firstGroundingViolation: { sequenceNumber: string; reason: string } | null;
   firstAuthorityViolation: { sequenceNumber: string; reason: string } | null;
+  firstSignatureViolation: { sequenceNumber: string; reason: string } | null;
   /**
    * Pre-carrier (v1) ASSIGNMENT bodies lacking delegator_authority — tolerated (chain
    * bytes are immutable) but counted, so a report states exactly how much of the chain
@@ -442,11 +650,14 @@ export function verifyValChain(
     scope: 'green',
     grounding: 'green',
     authority: 'none',
+    signature: 'none',
+    keyBinding: null,
     conformanceProfile: 'unknown',
     firstLineageViolation: null,
     firstScopeViolation: null,
     firstGroundingViolation: null,
     firstAuthorityViolation: null,
+    firstSignatureViolation: null,
     legacyPreAuthorityAssignmentCount: 0,
     nonValBlockCount: 0,
   };
@@ -629,6 +840,36 @@ export function verifyValChain(
           }
         }
       }
+      // ── Profile B/C signature pass (§5.2) ── A present delegation signature declares the
+      // profile (webauthn → B; qualified → C) and must verify + chain to the enrolled,
+      // self-attested org-root key. conformanceProfile reflects the DECLARED profile; the
+      // `signature` field reflects whether it VERIFIED. Both are read together (like
+      // integrity/lineage/...). device_bound vs syncable is surfaced verbatim, never rounded up.
+      {
+        const dsig = block.human_attestation?.delegator_authority?.signature;
+        if (dsig) {
+          const oroot = block.human_attestation?.delegator_authority?.org_root ?? null;
+          const tc = verifyDelegationTrustChain(dsig, oroot);
+          if (tc.outcome === 'qualified_unverified') {
+            // Profile C: CLASSIFIED (declared). Its crypto verification needs a QTSP trust
+            // list — a future trust-anchor input, never a silent default. Conformance
+            // reflects C; the signature pass is left unchanged (not green, not red).
+            profiles.add('C');
+          } else if (tc.signatureValid && tc.linkageVerified) {
+            // Only a VERIFIED + org-root-LINKED signature earns conformance B.
+            profiles.add('B');
+            if (result.signature === 'none') result.signature = 'green';
+            if (tc.keyBinding && !result.keyBinding) result.keyBinding = tc.keyBinding;
+          } else {
+            // A present signature that failed to verify or link → flag red and claim NO
+            // profile from it (conformance stays A). No over-claim, no silent default.
+            result.signature = 'red';
+            if (!result.firstSignatureViolation) {
+              result.firstSignatureViolation = { sequenceNumber: seqStr, reason: tc.reason };
+            }
+          }
+        }
+      }
       // Root ASSIGNMENT must be human-rooted; sub-ASSIGNMENT must walk to one.
       if (block.parent_assignment_hash) {
         const walk = walkLineage(block.parent_assignment_hash, index);
@@ -648,6 +889,14 @@ export function verifyValChain(
     }
   }
 
-  if (profiles.size === 1) result.conformanceProfile = [...profiles][0] as 'A';
+  // Conformance = the highest profile declared by the chain's ASSIGNMENTs (§5.2): a
+  // verified device/qualified binding (B/C) supersedes the operator-attested residual (A).
+  result.conformanceProfile = profiles.has('C')
+    ? 'C'
+    : profiles.has('B')
+      ? 'B'
+      : profiles.has('A')
+        ? 'A'
+        : 'unknown';
   return result;
 }

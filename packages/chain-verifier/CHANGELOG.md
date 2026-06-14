@@ -1,5 +1,54 @@
 # @val-protocol/chain-verifier — CHANGELOG
 
+## 0.4.0 — 2026-06-14
+
+### Features
+
+- **Profile B verification — offline device-signature trust chain (spec §5.2).** The reserved
+  `delegator_authority.signature` slot is now VERIFIED, not merely carried. A present WebAuthn
+  assertion is checked cryptographically (ES256 over `authenticatorData || sha256(clientDataJSON)`
+  against its embedded SPKI key) and must chain to the enrolled, self-attested org-root key:
+  - The embedded `delegator_authority.org_root` self-attestation is re-derived from chain bytes —
+    its `self_signature` must sign `orgRootBindingChallenge({org_id, signatory_identity_hash,
+    public_key, identity_assurance, key_binding})`. So `key_binding` / `identity_assurance` cannot
+    be relabeled without breaking the signature (tamper-evident: relabeling device_bound→syncable
+    ⇒ `signature: red`).
+  - The delegation `signature.public_key` must equal the enrolled org-root `public_key`
+    (linkage; a signature by any other key ⇒ `signature: red`).
+  - New report fields: `signature: 'green' | 'red' | 'none'`, `firstSignatureViolation`, and
+    `keyBinding: 'device_bound' | 'syncable' | null` — surfaced **verbatim**; `syncable` is never
+    rounded up to `device_bound`.
+- **Conformance now reaches B/C — and only on verified evidence (no silent default).**
+  `conformanceProfile` is the highest profile actually established by the chain's ASSIGNMENTs:
+  - **B** requires a delegation signature that VERIFIES and LINKS to the org-root. A present but
+    invalid/unlinked signature claims NO profile (conformance stays A) and is flagged
+    `signature: red` — no over-claim.
+  - **C** is reached when a qualified algorithm (`qes` / `eidas_qes` / `eidas_eaa`) is declared.
+    It is CLASSIFIED, not crypto-verified — the QTSP trust-list anchor is a future input, never a
+    silent pass — so a C signature reports `signature: 'none'` (neither green nor red) until that
+    anchor exists.
+  - Otherwise **A**. (Through 0.3.0 `conformanceProfile` could only ever report A.)
+- **Profile C anticipated, no rebuild required.** Qualified algs are recognized and slotted now;
+  `verifyDelegationTrustChain` returns `qualified_unverified` so a C chain is detected and reported
+  without any shape/API change when QTSP-anchored verification is later added.
+- New exports: `verifyDelegatorSignature`, `verifyDelegationTrustChain`, `orgRootBindingChallenge`,
+  and the `ValDelegatorSignature` / `ValOrgRootAttestation` / `ValIdentityAssurance` / `ValKeyBinding`
+  types.
+
+### Compatibility
+
+- Additive only. The new pass fires exclusively when a block carries
+  `delegator_authority.signature`; chains without it verify exactly as before and report
+  `signature: 'none'`, `conformanceProfile: 'A'`. Existing call shapes are unchanged. Still **zero
+  runtime dependencies** (Node `crypto` only).
+
+### Known limitation
+
+- The delegation signature is verified for cryptographic validity + org-root linkage, but its
+  WebAuthn challenge is not yet bound to a specific grant payload offline (that needs the operator's
+  grant-payload canonicalization as a trust-anchor input — a future strengthening). The
+  device_bound/syncable org-root verdict does not depend on it.
+
 ## 0.3.0 — 2026-06-11
 
 ### Features

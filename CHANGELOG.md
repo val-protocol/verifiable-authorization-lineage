@@ -2,6 +2,11 @@
 
 All notable changes to the VAL reference packages (`@val-protocol/*`) are documented here. Packages follow [semantic versioning](https://semver.org/); the specification is versioned independently (currently draft v0.1).
 
+## [0.4.0] — 2026-06-14
+
+- **`@val-protocol/chain-verifier` 0.4.0** — Profile B verification (spec §5.2): the reserved `delegator_authority.signature` slot is now cryptographically verified offline. A present WebAuthn assertion (ES256) is checked against its embedded key AND must chain to the enrolled, self-attested org-root (`org_root.self_signature` over `orgRootBindingChallenge(...)`, so `key_binding`/`identity_assurance` are tamper-evident; the delegation key must equal the org-root key). New report fields `signature` (`green`/`red`/`none`), `firstSignatureViolation`, `keyBinding` (`device_bound`/`syncable`, surfaced verbatim — never rounded up). `conformanceProfile` now reaches **B** (only on a verified+linked signature — no over-claim) and **C** (qualified algs classified; QTSP-anchored crypto verification reserved as a future trust input, never a silent default). New exports `verifyDelegatorSignature` / `verifyDelegationTrustChain` / `orgRootBindingChallenge`. Additive, zero runtime dependencies.
+- **Spec** — §5.2 Profile B/C: org-root self-attestation, device-signature trust chain, `device_bound`/`syncable` key binding surfaced verbatim; conformance ladder A→B→C.
+
 ## [0.3.0] — 2026-06-11
 
 - **`@val-protocol/chain-verifier` 0.3.0** — Pass 5: the reserved `container_owner` basis is re-derived from chain bytes where the chain permits (`scope_ref == scope.res.in_workspace`, policy-independent; a rooted COMMUNICATION's `user:` principal must hash to the attested `subject_user_hash`; `agent:` principals carry the Profile-A residual). Additive — the checks fire only on a basis no prior chain emitted.

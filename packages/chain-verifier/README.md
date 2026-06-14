@@ -106,18 +106,68 @@ subset check needs the policy. Pre-0.2.0 (v1) chains verify exactly as before, r
 **Trust boundary (read before citing pass-5 results):** pass 5 verifies the authority claim's
 *internal consistency* — the recorded capability could grant the delegated scope, against a
 policy YOU pin independently of the chain bytes (§7.1(d)); never accept a policy handed to you
-by the operator at verification time. It does **not** cryptographically prove the named human
-held that capability: under Profile A the carrier is operator-attested, and that residual trust
-is the profile's, not the pass's. The cryptographic binding is the carrier's reserved
-`signature` sub-field (Profiles B/C, spec §5.2) — until an operator ships it, no pass-5 result
-should be described as "trustless authority verification."
+by the operator at verification time. Under Profile A it does **not** cryptographically prove the
+named human held that capability — the carrier is operator-attested, and that residual trust is
+the profile's, not the pass's.
 
-One basis is stronger: for the reserved `container_owner` basis (spec §7.2, v0.3.0), two
-sub-claims ARE re-derived from chain bytes alone — `scope_ref` must equal the ASSIGNMENT's
-`scope.res.in_workspace`, and a human-performed COMMUNICATION rooted in it must hash
-(`sha256` of the `user:` principal id) to the attested `subject_user_hash`. Those two
-mismatches are detected without trusting the operator; the rest of the basis carries the
-same Profile-A residual as above.
+One basis is stronger even under Profile A: for the reserved `container_owner` basis (spec §7.2,
+v0.3.0), two sub-claims ARE re-derived from chain bytes alone — `scope_ref` must equal the
+ASSIGNMENT's `scope.res.in_workspace`, and a human-performed COMMUNICATION rooted in it must hash
+(`sha256` of the `user:` principal id) to the attested `subject_user_hash`. Those two mismatches
+are detected without trusting the operator; the rest of the basis carries the Profile-A residual.
+
+### Profile B — device-signature verification (v0.4.0, spec §5.2)
+
+When the carrier ships a `delegator_authority.signature` (a WebAuthn assertion), it is now
+**cryptographically verified offline**, closing the Profile-A residual for that grant:
+
+```ts
+const result = verifyValChain(rows);
+// result.signature          → 'green' (verified + linked) | 'red' (present but invalid) | 'none'
+// result.keyBinding         → 'device_bound' | 'syncable' | null   ← surfaced verbatim
+// result.firstSignatureViolation → first failure, or null
+// result.conformanceProfile → 'A' | 'B' | 'C'  (highest established by the chain)
+```
+
+What the pass proves, from the chain bytes alone:
+
+- The delegation signature is a valid ES256 assertion over its own `authenticatorData ||
+  sha256(clientDataJSON)`.
+- It chains to the enrolled, self-attested **org-root** key: the embedded
+  `delegator_authority.org_root.self_signature` must sign
+  `orgRootBindingChallenge({org_id, signatory_identity_hash, public_key, identity_assurance,
+  key_binding})`, and the delegation key must equal that org-root key. Relabeling `key_binding`
+  (e.g. `device_bound` → `syncable`) or `identity_assurance` breaks the self-signature ⇒
+  `signature: 'red'`. A signature by any other key ⇒ `signature: 'red'` (linkage failure).
+- `keyBinding` is reported **verbatim** — `syncable` (iCloud-synced passkey) is never rounded up
+  to `device_bound`. A verifying party decides for itself whether a synced key meets its bar.
+
+`conformanceProfile` reaches **B only on a verified + linked signature** (a present-but-invalid
+signature claims no profile and is flagged `signature: 'red'` — no over-claim). It reaches **C**
+when a qualified algorithm (`qes` / `eidas_qes` / `eidas_eaa`) is declared; Profile C is
+**classified, not yet crypto-verified** — its QTSP trust-list anchor is a future input, never a
+silent default, so a C signature reports `signature: 'none'` until that anchor exists.
+
+Known limitation: the signature's WebAuthn challenge is not yet bound offline to a specific grant
+payload (a future strengthening); the device_bound/syncable org-root verdict does not depend on it.
+
+#### Lower-level signature exports
+
+`verifyValChain` runs the signature pass for you. For callers that want to verify a delegation
+signature outside the chain context, three helpers are also exported:
+
+```ts
+import {
+  verifyDelegatorSignature,   // (sig, expectedChallenge?) → boolean — pure ES256 assertion check
+  verifyDelegationTrustChain,  // (delegationSig, orgRoot?) → { outcome, signatureValid, linkageVerified, keyBinding, reason }
+  orgRootBindingChallenge,     // (orgRoot) → string — the canonical challenge the org-root self-signature must cover
+} from '@val-protocol/chain-verifier';
+```
+
+`verifyDelegationTrustChain` is the building block the chain pass uses: it verifies the delegation
+signature AND its linkage to the self-attested org-root, returning the same `device_bound`/`syncable`
+binding surfaced verbatim. `orgRootBindingChallenge` lets you independently re-derive (and thus
+audit) the exact preimage the org-root `self_signature` commits to.
 
 ## Partial-slice verification
 
