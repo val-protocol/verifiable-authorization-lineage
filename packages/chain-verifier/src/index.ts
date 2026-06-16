@@ -18,7 +18,78 @@
  * contract is "verify these rows against the preimage construction in §4."
  */
 
-import { createHash, createPublicKey, createVerify } from 'crypto';
+// ── Isomorphic crypto (Web Crypto + Uint8Array) — runs in Node 18+ AND browsers, zero deps.
+// `crypto.subtle` and `atob`/`btoa` are global in both. The hash/verify fns are therefore
+// async; this is the only API shape difference from the prior Node-only build. ──
+const _enc = /* @__PURE__ */ new TextEncoder();
+function utf8(s: string): Uint8Array {
+  return _enc.encode(s);
+}
+function bytesToHex(b: Uint8Array): string {
+  let h = '';
+  for (let i = 0; i < b.length; i++) h += b[i].toString(16).padStart(2, '0');
+  return h;
+}
+function hexToBytes(h: string): Uint8Array {
+  const out = new Uint8Array(h.length >> 1);
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(h.slice(i << 1, (i << 1) + 2), 16);
+  return out;
+}
+function concatBytes(...arrs: Uint8Array[]): Uint8Array {
+  let len = 0;
+  for (const a of arrs) len += a.length;
+  const out = new Uint8Array(len);
+  let o = 0;
+  for (const a of arrs) {
+    out.set(a, o);
+    o += a.length;
+  }
+  return out;
+}
+/** base64 OR base64url → bytes. */
+function b64ToBytes(s: string): Uint8Array {
+  const bin = atob(s.replace(/-/g, '+').replace(/_/g, '/'));
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+/** bytes → base64url (no padding). */
+function bytesToB64url(b: Uint8Array): string {
+  let bin = '';
+  for (let i = 0; i < b.length; i++) bin += String.fromCharCode(b[i]);
+  return btoa(bin).replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
+}
+/** Coerce a Uint8Array to a fresh ArrayBuffer for Web Crypto — sidesteps TS 5.7's
+ *  `Uint8Array<ArrayBufferLike>` ≠ `BufferSource` generic (our arrays are never shared). */
+function ab(u: Uint8Array): ArrayBuffer {
+  return u.buffer.slice(u.byteOffset, u.byteOffset + u.byteLength) as ArrayBuffer;
+}
+async function sha256(data: Uint8Array): Promise<Uint8Array> {
+  return new Uint8Array(await crypto.subtle.digest('SHA-256', ab(data)));
+}
+/** DER-encoded ECDSA signature (SEQUENCE{ INTEGER r, INTEGER s }) → raw r‖s (64 bytes),
+ *  the IEEE-P1363 form Web Crypto's ECDSA verify expects. P-256 DER sigs are short-form. */
+function derToRawEcdsaSig(der: Uint8Array): Uint8Array {
+  if (der[0] !== 0x30) throw new Error('invalid DER ECDSA signature');
+  let off = 2; // short-form SEQUENCE length (P-256 sig total < 128 bytes)
+  if (der[off] !== 0x02) throw new Error('invalid DER ECDSA signature (r)');
+  const rlen = der[off + 1];
+  const r = der.slice(off + 2, off + 2 + rlen);
+  off = off + 2 + rlen;
+  if (der[off] !== 0x02) throw new Error('invalid DER ECDSA signature (s)');
+  const slen = der[off + 1];
+  const s = der.slice(off + 2, off + 2 + slen);
+  const to32 = (x: Uint8Array): Uint8Array => {
+    let i = 0;
+    while (i < x.length - 1 && x[i] === 0) i++; // strip DER sign-padding zeros
+    x = x.slice(i);
+    if (x.length > 32) x = x.slice(x.length - 32);
+    const out = new Uint8Array(32);
+    out.set(x, 32 - x.length);
+    return out;
+  };
+  return concatBytes(to32(r), to32(s));
+}
 
 /** One row of a chain, in the shape required for verification. */
 export interface ChainRow {
@@ -58,13 +129,13 @@ export interface ChainRow {
  *     COALESCE(previous_hash, 'GENESIS')
  *   )
  */
-export function reconstructChainHash(args: {
+export async function reconstructChainHash(args: {
   scopeKey: string;
   sequenceNumber: number | bigint;
   eventType: string;
   canonicalDetails: string;
   previousHash: string | null;
-}): string {
+}): Promise<string> {
   const prevComponent = args.previousHash ?? 'GENESIS';
   const preimage =
     args.scopeKey +
@@ -76,7 +147,7 @@ export function reconstructChainHash(args: {
     args.canonicalDetails +
     '|' +
     prevComponent;
-  return createHash('sha256').update(preimage, 'utf8').digest('hex');
+  return bytesToHex(await sha256(utf8(preimage)));
 }
 
 /**
@@ -91,23 +162,23 @@ export function reconstructChainHash(args: {
  * root with byte-identical leaf / concat / sort rules (VAL §6.4) for this
  * re-derivation to match.
  */
-export function computeMembershipRoot(contentHashes: string[]): string | null {
+export async function computeMembershipRoot(contentHashes: string[]): Promise<string | null> {
   const set = Array.from(new Set(contentHashes.filter((h) => h != null)));
   set.sort(); // bytewise on ASCII-hex; matches PG ORDER BY ... COLLATE "C"
   if (set.length === 0) return null;
-  let level: Buffer[] = set.map((h) => createHash('sha256').update(h, 'utf8').digest());
+  let level: Uint8Array[] = await Promise.all(set.map((h) => sha256(utf8(h))));
   while (level.length > 1) {
-    const next: Buffer[] = [];
+    const next: Uint8Array[] = [];
     for (let i = 0; i < level.length; i += 2) {
       if (i + 1 < level.length) {
-        next.push(createHash('sha256').update(Buffer.concat([level[i], level[i + 1]])).digest());
+        next.push(await sha256(concatBytes(level[i], level[i + 1])));
       } else {
         next.push(level[i]);
       }
     }
     level = next;
   }
-  return level[0].toString('hex');
+  return bytesToHex(level[0]);
 }
 
 /** One step of a VAL §6.4 Merkle inclusion proof (sibling node hash + its side). */
@@ -124,20 +195,20 @@ export interface MembershipProofStep {
  *
  * MUST match the producer's membership-proof construction byte-for-byte (VAL §6.4).
  */
-export function verifyMembershipProof(
+export async function verifyMembershipProof(
   contentHash: string,
   proof: MembershipProofStep[],
   expectedRoot: string,
-): boolean {
-  let cur: Buffer = createHash('sha256').update(contentHash, 'utf8').digest();
+): Promise<boolean> {
+  let cur: Uint8Array = await sha256(utf8(contentHash));
   for (const step of proof) {
-    const sib = Buffer.from(step.hash, 'hex');
+    const sib = hexToBytes(step.hash);
     cur =
       step.side === 'L'
-        ? createHash('sha256').update(Buffer.concat([sib, cur])).digest()
-        : createHash('sha256').update(Buffer.concat([cur, sib])).digest();
+        ? await sha256(concatBytes(sib, cur))
+        : await sha256(concatBytes(cur, sib));
   }
-  return cur.toString('hex') === expectedRoot;
+  return bytesToHex(cur) === expectedRoot;
 }
 
 /** Result of verifying a contiguous slice of a chain. */
@@ -169,7 +240,7 @@ export interface VerificationResult {
  * TSA-anchored sequence_number per the external-anchor spec §8) or
  * chains back to a row they have already trusted.
  */
-export function verifyChain(rows: ChainRow[]): VerificationResult {
+export async function verifyChain(rows: ChainRow[]): Promise<VerificationResult> {
   if (rows.length === 0) {
     return { ok: true, firstBadIndex: null, reason: null };
   }
@@ -222,7 +293,7 @@ export function verifyChain(rows: ChainRow[]): VerificationResult {
     }
 
     // Step 3: preimage reconstruction + SHA-256 match.
-    const expected = reconstructChainHash({
+    const expected = await reconstructChainHash({
       scopeKey: row.scope_key,
       sequenceNumber: row.sequence_number,
       eventType: row.event_type,
@@ -332,19 +403,12 @@ export interface ValBlockDelegatorAuthority {
 // a trust-anchor input (like the §7.1(d) policy / QTSP list), a future strengthening. The
 // device-bound/syncable org-root verdict does NOT depend on it.
 
-/** Decode base64 OR base64url to a Buffer. */
-function b64ToBuf(s: string): Buffer {
-  return Buffer.from(s.replace(/-/g, '+').replace(/_/g, '/'), 'base64');
-}
-function toB64Url(b: Buffer): string {
-  return b.toString('base64').replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
-}
 function normB64Url(s: string): string {
   return s.replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
 }
 /** Normalize a key to compare regardless of base64/base64url encoding. */
 function normKey(spkiB64: string): string {
-  return b64ToBuf(spkiB64).toString('base64');
+  return bytesToB64url(b64ToBytes(spkiB64));
 }
 
 /** Minimal RFC 8785 (JCS) canonical JSON: keys sorted by UTF-16 code unit (JS default
@@ -360,10 +424,10 @@ function jcs(value: unknown): string {
 
 /** The challenge the org-root self-attestation signs — re-derivable by any verifier from
  *  the attestation fields (so key_binding / identity cannot be relabeled without breaking it). */
-export function orgRootBindingChallenge(o: ValOrgRootAttestation): string {
-  return toB64Url(
-    createHash('sha256')
-      .update(
+export async function orgRootBindingChallenge(o: ValOrgRootAttestation): Promise<string> {
+  return bytesToB64url(
+    await sha256(
+      utf8(
         jcs({
           identity_assurance: {
             source: o.identity_assurance.source,
@@ -374,23 +438,23 @@ export function orgRootBindingChallenge(o: ValOrgRootAttestation): string {
           public_key: o.public_key,
           signatory_identity_hash: o.signatory_identity_hash,
         }),
-      )
-      .digest(),
+      ),
+    ),
   );
 }
 
 /** Verify a WebAuthn (ES256) delegator assertion against its embedded public key. When
  *  `expectedChallengeB64Url` is given, also require clientDataJSON.challenge to match it. */
-export function verifyDelegatorSignature(
+export async function verifyDelegatorSignature(
   sig: ValDelegatorSignature,
   expectedChallengeB64Url?: string,
-): { valid: boolean; reason: string } {
+): Promise<{ valid: boolean; reason: string }> {
   try {
     if (!sig || sig.alg !== 'webauthn') return { valid: false, reason: `unsupported alg: ${sig?.alg}` };
-    const clientDataJson = b64ToBuf(sig.client_data_json);
+    const clientDataJson = b64ToBytes(sig.client_data_json);
     let clientData: { type?: string; challenge?: string };
     try {
-      clientData = JSON.parse(clientDataJson.toString('utf8'));
+      clientData = JSON.parse(new TextDecoder().decode(clientDataJson));
     } catch {
       return { valid: false, reason: 'clientDataJSON not parseable' };
     }
@@ -400,11 +464,21 @@ export function verifyDelegatorSignature(
         return { valid: false, reason: 'challenge mismatch (signature is for a different statement)' };
       }
     }
-    const authData = b64ToBuf(sig.authenticator_data);
-    const cdjHash = createHash('sha256').update(clientDataJson).digest();
-    const signedBytes = Buffer.concat([authData, cdjHash]);
-    const pubKey = createPublicKey({ key: b64ToBuf(sig.public_key), format: 'der', type: 'spki' });
-    const ok = createVerify('sha256').update(signedBytes).verify({ key: pubKey, dsaEncoding: 'der' }, b64ToBuf(sig.signature));
+    // WebAuthn signed bytes = authenticatorData || SHA-256(clientDataJSON); the ECDSA-P256
+    // signature is over SHA-256(signedBytes). Web Crypto's verify hashes signedBytes itself
+    // (hash:'SHA-256'), so we pass signedBytes — and convert the DER signature to raw r‖s.
+    const authData = b64ToBytes(sig.authenticator_data);
+    const cdjHash = await sha256(clientDataJson);
+    const signedBytes = concatBytes(authData, cdjHash);
+    const pubKey = await crypto.subtle.importKey(
+      'spki',
+      ab(b64ToBytes(sig.public_key)),
+      { name: 'ECDSA', namedCurve: 'P-256' },
+      false,
+      ['verify'],
+    );
+    const rawSig = derToRawEcdsaSig(b64ToBytes(sig.signature));
+    const ok = await crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, pubKey, ab(rawSig), ab(signedBytes));
     return ok
       ? { valid: true, reason: 'signature valid against embedded public key' }
       : { valid: false, reason: 'signature does not verify against embedded public key' };
@@ -428,24 +502,24 @@ export type TrustChainOutcome =
 /** Verify a Profile B/C delegation: the signature is a valid assertion by the enrolled,
  *  self-attested org-root key. Returns the honest outcome (device_bound vs syncable, or
  *  signature_valid_only when the org-root linkage is absent/broken). */
-export function verifyDelegationTrustChain(
+export async function verifyDelegationTrustChain(
   delegationSig: ValDelegatorSignature,
   orgRoot?: ValOrgRootAttestation | null,
-): {
+): Promise<{
   signatureValid: boolean;
   linkageVerified: boolean;
   outcome: TrustChainOutcome;
   keyBinding: ValKeyBinding | null;
   subjectAssurance: ValIdentityAssurance | null;
   reason: string;
-} {
+}> {
   const base = { keyBinding: null as ValKeyBinding | null, subjectAssurance: null as ValIdentityAssurance | null };
   // Profile C (qualified) — classified, but its QTSP-anchored verification is a future
   // trust-anchor input. Surface honestly rather than silently passing or failing.
   if (QUALIFIED_ALGS.has(delegationSig?.alg)) {
     return { ...base, signatureValid: false, linkageVerified: false, outcome: 'qualified_unverified', reason: `qualified alg '${delegationSig.alg}' requires a QTSP trust list (not supplied) — Profile C classified, not verified` };
   }
-  const sigCheck = verifyDelegatorSignature(delegationSig);
+  const sigCheck = await verifyDelegatorSignature(delegationSig);
   if (!sigCheck.valid) {
     return { ...base, signatureValid: false, linkageVerified: false, outcome: 'invalid', reason: `delegation signature invalid: ${sigCheck.reason}` };
   }
@@ -454,7 +528,7 @@ export function verifyDelegationTrustChain(
   if (!orgRoot.identity_assurance || (orgRoot.key_binding !== 'device_bound' && orgRoot.key_binding !== 'syncable')) {
     return notLinked('org-root attestation missing identity_assurance / key_binding');
   }
-  const selfCheck = verifyDelegatorSignature(orgRoot.self_signature, orgRootBindingChallenge(orgRoot));
+  const selfCheck = await verifyDelegatorSignature(orgRoot.self_signature, await orgRootBindingChallenge(orgRoot));
   if (!selfCheck.valid) return notLinked(`org-root self-attestation invalid: ${selfCheck.reason}`);
   if (normKey(orgRoot.self_signature.public_key) !== normKey(orgRoot.public_key)) {
     return notLinked('org-root attestation is not self-signed (attesting key != attested key)');
@@ -595,7 +669,7 @@ function walkLineage(
 }
 
 /** Evaluate §6.6 satisfaction of an action block against one ASSIGNMENT scope. */
-function satisfies(block: ValBlock, scope: ScopePredicate): { ok: boolean; reason: string | null } {
+async function satisfies(block: ValBlock, scope: ScopePredicate): Promise<{ ok: boolean; reason: string | null }> {
   if (scope.subj?.principal_uri && block.principal && block.principal !== scope.subj.principal_uri) {
     return { ok: false, reason: `principal '${block.principal}' != scope subj '${scope.subj.principal_uri}'` };
   }
@@ -616,7 +690,7 @@ function satisfies(block: ValBlock, scope: ScopePredicate): { ok: boolean; reaso
     if (!ch || !block.membership_proof) {
       return { ok: false, reason: 'ACCESS under isolation_commitment has no resource content_hash + membership_proof' };
     }
-    if (!verifyMembershipProof(ch, block.membership_proof, res.isolation_commitment)) {
+    if (!(await verifyMembershipProof(ch, block.membership_proof, res.isolation_commitment))) {
       return { ok: false, reason: 'membership_proof does not re-derive the committed isolation root (isolation violation)' };
     }
   }
@@ -640,10 +714,10 @@ function satisfies(block: ValBlock, scope: ScopePredicate): { ok: boolean; reaso
  * `options` is additive; existing callers are unaffected. Input MUST be the same
  * partitioned, sorted, contiguous slice verifyChain requires.
  */
-export function verifyValChain(
+export async function verifyValChain(
   rows: ChainRow[],
   options?: { delegatorAuthorityPolicy?: DelegatorAuthorityPolicy },
-): ValVerificationResult {
+): Promise<ValVerificationResult> {
   const result: ValVerificationResult = {
     integrity: 'green',
     lineage: 'green',
@@ -663,7 +737,7 @@ export function verifyValChain(
   };
 
   // Pass 1 — integrity.
-  const integrity = verifyChain(rows);
+  const integrity = await verifyChain(rows);
   if (!integrity.ok) {
     result.integrity = 'red';
     return result; // integrity is prerequisite; no point walking a broken chain.
@@ -713,7 +787,7 @@ export function verifyValChain(
 
       // ── Pass 3 — scope (effective = satisfy every ASSIGNMENT scope on the path) ──
       for (const scope of walk.scopes) {
-        const sat = satisfies(block, scope);
+        const sat = await satisfies(block, scope);
         if (!sat.ok) {
           if (result.scope === 'green') {
             result.scope = 'red';
@@ -740,9 +814,7 @@ export function verifyValChain(
           block.principal.startsWith('user:')
         ) {
           const subjectHash = parent.human_attestation?.subject_user_hash;
-          const principalHash = createHash('sha256')
-            .update(block.principal.slice('user:'.length), 'utf8')
-            .digest('hex');
+          const principalHash = bytesToHex(await sha256(utf8(block.principal.slice('user:'.length))));
           if (!subjectHash || principalHash !== subjectHash) {
             result.authority = 'red';
             if (!result.firstAuthorityViolation) {
@@ -849,7 +921,7 @@ export function verifyValChain(
         const dsig = block.human_attestation?.delegator_authority?.signature;
         if (dsig) {
           const oroot = block.human_attestation?.delegator_authority?.org_root ?? null;
-          const tc = verifyDelegationTrustChain(dsig, oroot);
+          const tc = await verifyDelegationTrustChain(dsig, oroot);
           if (tc.outcome === 'qualified_unverified') {
             // Profile C: CLASSIFIED (declared). Its crypto verification needs a QTSP trust
             // list — a future trust-anchor input, never a silent default. Conformance

@@ -1,5 +1,22 @@
 # @val-protocol/chain-verifier — CHANGELOG
 
+## 0.5.0 — 2026-06-16
+
+### Breaking
+
+- **Isomorphic crypto (runs in the browser now); the verify API is `async`.** The verifier was
+  Node-only (`node:crypto` `createHash`/`createPublicKey`/`createVerify` + `Buffer`), so it could
+  not run in a browser — the "verify client-side without trusting the operator" promise was only
+  deliverable from Node (the CLI). It now uses the **Web Crypto API** (`crypto.subtle`) +
+  `Uint8Array`, available in Node 18+ AND browsers, with **zero new dependencies**. Because
+  `crypto.subtle` is async, the verification functions now return `Promise` and must be `await`ed:
+  `reconstructChainHash`, `verifyChain`, `verifyValChain`, `verifyMembershipProof`,
+  `computeMembershipRoot`, `orgRootBindingChallenge`, `verifyDelegatorSignature`,
+  `verifyDelegationTrustChain`.
+- **No behavior change.** Byte-identical hashes and verdicts: the full test suite (integrity,
+  lineage, scope, grounding, authority, and the ES256 Profile-B signature path — Node-generated
+  ECDSA-P256 DER signatures verified through the new Web-Crypto path) passes unchanged after `await`.
+
 ## 0.4.0 — 2026-06-14
 
 ### Features

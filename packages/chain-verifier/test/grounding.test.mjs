@@ -8,9 +8,9 @@ import { verifyValChain, reconstructChainHash } from '../dist/esm/index.js';
 const SCOPE = 's-grounding';
 const C = 'c0ffeecontenthash'; // a content hash the principal reads
 
-function mkRow(seq, prev, eventType, body) {
+async function mkRow(seq, prev, eventType, body) {
   const canonical_details = JSON.stringify(body);
-  const chain_hash = reconstructChainHash({
+  const chain_hash = await reconstructChainHash({
     scopeKey: SCOPE,
     sequenceNumber: seq,
     eventType,
@@ -28,19 +28,19 @@ const ASSIGNMENT = {
 };
 
 // ASSIGNMENT → [ACCESS by P of C] → MUTATION by P citing `cited`.
-function chain(cited, includeAccess) {
-  const a = mkRow(1, null, 'assign', ASSIGNMENT);
+async function chain(cited, includeAccess) {
+  const a = await mkRow(1, null, 'assign', ASSIGNMENT);
   const rows = [a];
   let seq = 2;
   let prev = a.chain_hash;
   if (includeAccess) {
-    const acc = mkRow(seq, prev, 'access', {
+    const acc = await mkRow(seq, prev, 'access', {
       v: 1, block_type: 'ACCESS', parent_assignment_hash: a.chain_hash, action: 'read',
       principal: 'P', resource: { content_hash: C, resource_id: 'r', in_workspace: 'w' },
     });
     rows.push(acc); seq++; prev = acc.chain_hash;
   }
-  const mut = mkRow(seq, prev, 'mutate', {
+  const mut = await mkRow(seq, prev, 'mutate', {
     v: 1, block_type: 'MUTATION', parent_assignment_hash: a.chain_hash, action: 'write',
     principal: 'P', resource: { content_hash: 'outhash', resource_id: 'r2', in_workspace: 'w' },
     grounded_document_hashes: cited,
@@ -49,25 +49,25 @@ function chain(cited, includeAccess) {
   return rows;
 }
 
-test('grounded MUTATION citing content read by same principal => grounding green', () => {
-  const r = verifyValChain(chain([C], true));
+test('grounded MUTATION citing content read by same principal => grounding green', async () => {
+  const r = await verifyValChain(await chain([C], true));
   assert.equal(r.integrity, 'green');
   assert.equal(r.lineage, 'green');
   assert.equal(r.scope, 'green');
   assert.equal(r.grounding, 'green', r.firstGroundingViolation?.reason);
 });
 
-test('grounded MUTATION citing content never read => grounding red', () => {
-  const r = verifyValChain(chain(['neverreadhash'], true));
+test('grounded MUTATION citing content never read => grounding red', async () => {
+  const r = await verifyValChain(await chain(['neverreadhash'], true));
   assert.equal(r.grounding, 'red');
 });
 
-test('grounded MUTATION with no prior ACCESS at all => grounding red', () => {
-  const r = verifyValChain(chain([C], false));
+test('grounded MUTATION with no prior ACCESS at all => grounding red', async () => {
+  const r = await verifyValChain(await chain([C], false));
   assert.equal(r.grounding, 'red');
 });
 
-test('MUTATION with empty grounded_document_hashes => grounding green (not content-derived)', () => {
-  const r = verifyValChain(chain([], true));
+test('MUTATION with empty grounded_document_hashes => grounding green (not content-derived)', async () => {
+  const r = await verifyValChain(await chain([], true));
   assert.equal(r.grounding, 'green');
 });

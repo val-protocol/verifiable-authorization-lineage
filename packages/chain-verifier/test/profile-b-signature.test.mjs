@@ -12,7 +12,7 @@ const b64 = (b) => b.toString('base64');
 const spkiB64 = (pub) => b64(pub.export({ format: 'der', type: 'spki' }));
 const newKey = () => generateKeyPairSync('ec', { namedCurve: 'P-256' });
 
-/** Build a WebAuthn-shaped ES256 assertion over `challenge` with `priv`/`pub`. */
+/** Build a WebAuthn-shaped ES256 assertion over `challenge` with `priv`/`pub` (Node-side, sync). */
 function signAssertion(challenge, priv, pub) {
   const clientDataJson = Buffer.from(JSON.stringify({ type: 'webauthn.get', challenge, origin: 'https://x', crossOrigin: false }), 'utf8');
   const authenticatorData = randomBytes(37);
@@ -22,12 +22,12 @@ function signAssertion(challenge, priv, pub) {
 }
 
 /** Build a self-attested org-root + a delegation signed by the same key. keyBinding chosen. */
-function makeSignedAssignment({ keyBinding = 'device_bound', delegationKey, relabelBinding } = {}) {
+async function makeSignedAssignment({ keyBinding = 'device_bound', delegationKey, relabelBinding } = {}) {
   const root = newKey();
   const rootSpki = spkiB64(root.publicKey);
   const assurance = { source: 'self_asserted', subject_claim: 'Maître Dupont, notaire' };
   const orgRootBase = { org_id: 'org-1', signatory_identity_hash: 'sha256:sig', public_key: rootSpki, identity_assurance: assurance, key_binding: keyBinding };
-  const selfSig = signAssertion(orgRootBindingChallenge(orgRootBase), root.privateKey, root.publicKey);
+  const selfSig = signAssertion(await orgRootBindingChallenge(orgRootBase), root.privateKey, root.publicKey);
   // relabelBinding: stamp a DIFFERENT key_binding than what was signed (tamper).
   const org_root = { ...orgRootBase, key_binding: relabelBinding ?? keyBinding, self_signature: selfSig };
   const dk = delegationKey ?? root; // by default the delegation is signed by the org-root key.
@@ -38,59 +38,59 @@ function makeSignedAssignment({ keyBinding = 'device_bound', delegationKey, rela
   };
 }
 
-function mkRow(body) {
+async function mkRow(body) {
   const canonical_details = JSON.stringify(body);
-  const chain_hash = reconstructChainHash({ scopeKey: SCOPE, sequenceNumber: 1, eventType: 'assign', canonicalDetails: canonical_details, previousHash: null });
+  const chain_hash = await reconstructChainHash({ scopeKey: SCOPE, sequenceNumber: 1, eventType: 'assign', canonicalDetails: canonical_details, previousHash: null });
   return [{ scope_key: SCOPE, sequence_number: 1, event_type: 'assign', canonical_details, previous_hash: null, chain_hash }];
 }
 
-test('Profile B device-bound: signature verified + linked => conformance B, signature green, keyBinding device_bound', () => {
-  const r = verifyValChain(mkRow(makeSignedAssignment({ keyBinding: 'device_bound' })));
+test('Profile B device-bound: signature verified + linked => conformance B, signature green, keyBinding device_bound', async () => {
+  const r = await verifyValChain(await mkRow(await makeSignedAssignment({ keyBinding: 'device_bound' })));
   assert.equal(r.conformanceProfile, 'B');
   assert.equal(r.signature, 'green');
   assert.equal(r.keyBinding, 'device_bound');
   assert.equal(r.firstSignatureViolation, null);
 });
 
-test('Profile B syncable: surfaced verbatim, never rounded to device_bound', () => {
-  const r = verifyValChain(mkRow(makeSignedAssignment({ keyBinding: 'syncable' })));
+test('Profile B syncable: surfaced verbatim, never rounded to device_bound', async () => {
+  const r = await verifyValChain(await mkRow(await makeSignedAssignment({ keyBinding: 'syncable' })));
   assert.equal(r.conformanceProfile, 'B');
   assert.equal(r.signature, 'green');
   assert.equal(r.keyBinding, 'syncable');
 });
 
-test('tampered delegation signature => signature red', () => {
-  const a = makeSignedAssignment({});
+test('tampered delegation signature => signature red', async () => {
+  const a = await makeSignedAssignment({});
   const buf = Buffer.from(a.human_attestation.delegator_authority.signature.signature, 'base64'); buf[10] ^= 0xff;
   a.human_attestation.delegator_authority.signature.signature = buf.toString('base64');
-  const r = verifyValChain(mkRow(a));
+  const r = await verifyValChain(await mkRow(a));
   assert.equal(r.signature, 'red');
 });
 
-test('delegation signed by a key that is NOT the enrolled org-root => signature red (linkage)', () => {
-  const r = verifyValChain(mkRow(makeSignedAssignment({ delegationKey: newKey() })));
+test('delegation signed by a key that is NOT the enrolled org-root => signature red (linkage)', async () => {
+  const r = await verifyValChain(await mkRow(await makeSignedAssignment({ delegationKey: newKey() })));
   assert.equal(r.signature, 'red');
   assert.match(r.firstSignatureViolation.reason, /not the enrolled org-root key/);
 });
 
-test('relabel key_binding (device_bound→syncable) without re-signing org-root => signature red (tamper-evident)', () => {
-  const r = verifyValChain(mkRow(makeSignedAssignment({ keyBinding: 'device_bound', relabelBinding: 'syncable' })));
+test('relabel key_binding (device_bound→syncable) without re-signing org-root => signature red (tamper-evident)', async () => {
+  const r = await verifyValChain(await mkRow(await makeSignedAssignment({ keyBinding: 'device_bound', relabelBinding: 'syncable' })));
   assert.equal(r.signature, 'red');
 });
 
-test('Profile C (qualified alg) => conformance C, classified but not crypto-verified', () => {
-  const a = makeSignedAssignment({});
+test('Profile C (qualified alg) => conformance C, classified but not crypto-verified', async () => {
+  const a = await makeSignedAssignment({});
   a.human_attestation.delegator_authority.signature.alg = 'qes';
-  const r = verifyValChain(mkRow(a));
+  const r = await verifyValChain(await mkRow(a));
   assert.equal(r.conformanceProfile, 'C');
   assert.equal(r.signature, 'none'); // qualified_unverified — not green, not red
 });
 
-test('Profile A (no signature) => conformance A, signature none', () => {
-  const a = makeSignedAssignment({});
+test('Profile A (no signature) => conformance A, signature none', async () => {
+  const a = await makeSignedAssignment({});
   delete a.human_attestation.delegator_authority.signature;
   delete a.human_attestation.delegator_authority.org_root;
-  const r = verifyValChain(mkRow(a));
+  const r = await verifyValChain(await mkRow(a));
   assert.equal(r.conformanceProfile, 'A');
   assert.equal(r.signature, 'none');
 });

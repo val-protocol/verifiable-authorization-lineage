@@ -140,7 +140,7 @@ async function fetchAuditExport(
   return all;
 }
 
-function verifyRows(rows: ChainRow[], quiet: boolean): { failed: number } {
+async function verifyRows(rows: ChainRow[], quiet: boolean): Promise<{ failed: number }> {
   let failed = 0;
   for (let i = 0; i < rows.length; i += 1) {
     const row = rows[i];
@@ -171,7 +171,7 @@ function verifyRows(rows: ChainRow[], quiet: boolean): { failed: number } {
       }
     }
 
-    const expected = reconstructChainHash({
+    const expected = await reconstructChainHash({
       scopeKey: row.scope_key,
       sequenceNumber: row.sequence_number,
       eventType: row.event_type,
@@ -217,7 +217,7 @@ async function main(): Promise<void> {
     );
   }
 
-  const { failed } = verifyRows(rows, args.quiet);
+  const { failed } = await verifyRows(rows, args.quiet);
   const passed = rows.length - failed;
   process.stdout.write(`\n── ${passed}/${rows.length} PASS, ${failed} FAIL ──\n`);
   process.exit(failed === 0 ? 0 : 1);

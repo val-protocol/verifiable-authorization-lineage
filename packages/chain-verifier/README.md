@@ -24,7 +24,7 @@ const rows: ChainRow[] = ndjson
   .split('\n')
   .map((line) => JSON.parse(line));
 
-const result = verifyChain(rows);
+const result = await verifyChain(rows);
 if (!result.ok) {
   console.error(`chain broken at row ${result.firstBadIndex}: ${result.reason}`);
   process.exit(1);
@@ -37,7 +37,7 @@ console.log(`verified ${rows.length} rows; chain intact.`);
 ```ts
 import { reconstructChainHash } from '@val-protocol/chain-verifier';
 
-const expected = reconstructChainHash({
+const expected = await reconstructChainHash({
   scopeKey: '1f0ee1e2-6f2c-4f95-955b-5aa5270ce05c',
   sequenceNumber: 42,
   eventType: 'record.created',
@@ -86,7 +86,7 @@ spec §7.1(d)) to have the verifier assert `scope.act ⊆ policy[capability]`:
 ```ts
 import { verifyValChain } from '@val-protocol/chain-verifier';
 
-const result = verifyValChain(rows, {
+const result = await verifyValChain(rows, {
   delegatorAuthorityPolicy: {
     // operator-namespaced capability → actions a holder may delegate
     administrator: ['read', 'view', 'list', 'create', 'upload', 'send'],
@@ -122,7 +122,7 @@ When the carrier ships a `delegator_authority.signature` (a WebAuthn assertion),
 **cryptographically verified offline**, closing the Profile-A residual for that grant:
 
 ```ts
-const result = verifyValChain(rows);
+const result = await verifyValChain(rows);
 // result.signature          → 'green' (verified + linked) | 'red' (present but invalid) | 'none'
 // result.keyBinding         → 'device_bound' | 'syncable' | null   ← surfaced verbatim
 // result.firstSignatureViolation → first failure, or null
@@ -187,28 +187,28 @@ A simple adversarial round-trip you can run to sanity-check the package after in
 import { reconstructChainHash, verifyChain } from '@val-protocol/chain-verifier';
 
 const cd = '{"foo":"bar"}';
-const h1 = reconstructChainHash({
+const h1 = await reconstructChainHash({
   scopeKey: 'x',
   sequenceNumber: 1,
   eventType: 'genesis',
   canonicalDetails: cd,
   previousHash: null,
 });
-const h2 = reconstructChainHash({
+const h2 = await reconstructChainHash({
   scopeKey: 'x',
   sequenceNumber: 2,
   eventType: 'next',
   canonicalDetails: cd,
   previousHash: h1,
 });
-console.log(verifyChain([
+console.log(await verifyChain([
   { scope_key: 'x', sequence_number: 1, event_type: 'genesis', canonical_details: cd, previous_hash: null, chain_hash: h1 },
   { scope_key: 'x', sequence_number: 2, event_type: 'next',    canonical_details: cd, previous_hash: h1,   chain_hash: h2 },
 ]));
 // { ok: true, firstBadIndex: null, reason: null }
 
 // Tamper:
-console.log(verifyChain([
+console.log(await verifyChain([
   { scope_key: 'x', sequence_number: 1, event_type: 'genesis', canonical_details: cd + ' ', previous_hash: null, chain_hash: h1 },
   { scope_key: 'x', sequence_number: 2, event_type: 'next',    canonical_details: cd,        previous_hash: h1,   chain_hash: h2 },
 ]));
