@@ -562,6 +562,9 @@ export interface ValBlock {
   v?: number;
   block_type?: 'ASSIGNMENT' | 'ACCESS' | 'MUTATION' | 'CONSENT' | 'COMMUNICATION' | 'SETTLEMENT' | 'ANCHOR';
   // ASSIGNMENT:
+  // Agent-equity carrier (v3 ASSIGNMENT): the principal this grant authorizes
+  // (`agent:<sa>` | `user:<id>`). Every action block rooting here must carry `principal == grantee`.
+  grantee?: string;
   scope?: ScopePredicate;
   human_attestation?: { method?: string; subject_user_hash?: string; delegator_authority?: ValBlockDelegatorAuthority } | null;
   parent_assignment_hash?: string | null;
@@ -794,6 +797,25 @@ export async function verifyValChain(
             result.firstScopeViolation = { sequenceNumber: seqStr, reason: sat.reason ?? 'scope violation' };
           }
           break;
+        }
+      }
+
+      // ── Agent-equity — `action.principal == grant.grantee`. The action roots directly in the
+      // actor's grant; a v>=3 ASSIGNMENT names its grantee, so the action's principal MUST equal it
+      // ("it's THIS actor's own mandate"). v1/v2 grants carry no grantee → grandfathered. ──
+      {
+        const grant = index.get(block.parent_assignment_hash);
+        const grantV = grant?.v ?? 1;
+        if (grant?.block_type === 'ASSIGNMENT' && grantV >= 3 && grant.grantee) {
+          if (block.principal !== grant.grantee) {
+            result.authority = 'red';
+            if (!result.firstAuthorityViolation) {
+              result.firstAuthorityViolation = {
+                sequenceNumber: seqStr,
+                reason: `agent-equity: action principal '${block.principal ?? '(none)'}' != grant grantee '${grant.grantee}' (v${grantV} ASSIGNMENT)`,
+              };
+            }
+          }
         }
       }
 
