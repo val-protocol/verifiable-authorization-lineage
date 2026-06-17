@@ -335,6 +335,10 @@ export interface ScopePredicate {
   // VAL §6.2/§6.6 temporal window (unix ms). Checked in `satisfies` against the block's
   // `timestamp_local` — the same field the operator's PG trigger enforces preventively.
   win?: { not_before?: number; not_after?: number };
+  // VAL §6.2/§6.6 quantitative limits. The §6.6 aggregate over a grant's descendants is the verifier's
+  // job (detective) — `max_count` is checked in verifyValChain (cross-block). `max_value`/
+  // `max_value_currency` aggregate over SETTLEMENT descendants (operator-deployment-specific).
+  lim?: { max_count?: number; max_value?: number; max_value_currency?: string };
 }
 
 /** Identity-assurance basis of a self-attested signing key (§5.2). `source` widens with the
@@ -574,7 +578,7 @@ export interface ValBlock {
   // action blocks:
   action?: string;
   principal?: string;
-  // VAL §4 timestamp_local — operator-supplied unix ms, carried ON the block. The §6.6 win check
+  // VAL §6.6/§8 timestamp_local — operator-supplied unix ms (an operator convention; the spec leaves the unit unspecified), carried ON the block. The §6.6 win check
   // compares it to scope.win.{not_before,not_after}; the operator's PG trigger reads this same field.
   timestamp_local?: number;
   resource?: { content_hash?: string; resource_id?: string; in_workspace?: string };
@@ -704,7 +708,7 @@ async function satisfies(block: ValBlock, scope: ScopePredicate): Promise<{ ok: 
     }
   }
   // §6.6 temporal window: `not_before ≤ timestamp_local ≤ not_after` (where bounds are present).
-  // timestamp_local is unix ms (§4) — the same field the operator's PG trigger enforces preventively.
+  // timestamp_local is unix ms (an operator convention; spec §6.6 bounds are unit-agnostic) — the same field the operator's PG trigger enforces preventively.
   if (scope.win && (typeof scope.win.not_before === 'number' || typeof scope.win.not_after === 'number')) {
     const ts = block.timestamp_local;
     if (typeof ts !== 'number') {
@@ -780,6 +784,9 @@ export async function verifyValChain(
   // ACCESS block earlier in this chain. Populated as we walk in sequence order; a later MUTATION
   // that cites grounded_document_hashes must cite content present here for the same principal.
   const accessByPrincipal = new Map<string, Set<string>>();
+  // §6.6 lim.max_count: running count of action blocks rooting in each grant; the (max_count+1)-th
+  // block over a grant's limit is the violation. Single-hop today (direct children = all descendants).
+  const limCounts = new Map<string, number>();
 
   for (const { row, block } of blocks) {
     if (!block) continue;
@@ -817,6 +824,25 @@ export async function verifyValChain(
             result.firstScopeViolation = { sequenceNumber: seqStr, reason: sat.reason ?? 'scope violation' };
           }
           break;
+        }
+      }
+
+      // ── §6.6 lim.max_count — aggregate over a grant's descendant action blocks (verifier-side,
+      // detective). Running count: the (max_count+1)-th action block rooting in a grant is the
+      // violation. Direct-parent count = full descendant count under single-hop. ──
+      {
+        const grant = index.get(block.parent_assignment_hash);
+        const maxCount = grant?.scope?.lim?.max_count;
+        if (grant?.block_type === 'ASSIGNMENT' && typeof maxCount === 'number') {
+          const c = (limCounts.get(block.parent_assignment_hash) ?? 0) + 1;
+          limCounts.set(block.parent_assignment_hash, c);
+          if (c > maxCount && result.scope === 'green') {
+            result.scope = 'red';
+            result.firstScopeViolation = {
+              sequenceNumber: seqStr,
+              reason: `lim.max_count ${maxCount} exceeded: ${c} action blocks root in this grant`,
+            };
+          }
         }
       }
 
