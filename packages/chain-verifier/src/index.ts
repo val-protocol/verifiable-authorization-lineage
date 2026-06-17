@@ -332,6 +332,9 @@ export interface ScopePredicate {
     isolation?: string | null;
     isolation_commitment?: string | null;
   };
+  // VAL §6.2/§6.6 temporal window (unix ms). Checked in `satisfies` against the block's
+  // `timestamp_local` — the same field the operator's PG trigger enforces preventively.
+  win?: { not_before?: number; not_after?: number };
 }
 
 /** Identity-assurance basis of a self-attested signing key (§5.2). `source` widens with the
@@ -571,6 +574,9 @@ export interface ValBlock {
   // action blocks:
   action?: string;
   principal?: string;
+  // VAL §4 timestamp_local — operator-supplied unix ms, carried ON the block. The §6.6 win check
+  // compares it to scope.win.{not_before,not_after}; the operator's PG trigger reads this same field.
+  timestamp_local?: number;
   resource?: { content_hash?: string; resource_id?: string; in_workspace?: string };
   membership_proof?: MembershipProofStep[];
   // §7.5 grounding: content-hashes this MUTATION asserts it derived from. The verifier checks each
@@ -695,6 +701,20 @@ async function satisfies(block: ValBlock, scope: ScopePredicate): Promise<{ ok: 
     }
     if (!(await verifyMembershipProof(ch, block.membership_proof, res.isolation_commitment))) {
       return { ok: false, reason: 'membership_proof does not re-derive the committed isolation root (isolation violation)' };
+    }
+  }
+  // §6.6 temporal window: `not_before ≤ timestamp_local ≤ not_after` (where bounds are present).
+  // timestamp_local is unix ms (§4) — the same field the operator's PG trigger enforces preventively.
+  if (scope.win && (typeof scope.win.not_before === 'number' || typeof scope.win.not_after === 'number')) {
+    const ts = block.timestamp_local;
+    if (typeof ts !== 'number') {
+      return { ok: false, reason: 'scope.win present but block carries no timestamp_local (§6.6, unverifiable window)' };
+    }
+    if (typeof scope.win.not_before === 'number' && ts < scope.win.not_before) {
+      return { ok: false, reason: `timestamp_local ${ts} is before win.not_before ${scope.win.not_before}` };
+    }
+    if (typeof scope.win.not_after === 'number' && ts > scope.win.not_after) {
+      return { ok: false, reason: `timestamp_local ${ts} is after win.not_after ${scope.win.not_after}` };
     }
   }
   return { ok: true, reason: null };
