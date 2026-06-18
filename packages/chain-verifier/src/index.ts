@@ -586,6 +586,11 @@ export interface ValBlock {
   // §7.5 grounding: content-hashes this MUTATION asserts it derived from. The verifier checks each
   // was read via a prior ACCESS by the same principal in this chain (read-before-derive).
   grounded_document_hashes?: string[] | null;
+  // §4.3 CONSENT (sign-class): the single signed-artifact hash bound directly by the bond, and the
+  // per-action human signature over it (§5.2). The verifier checks the signature's challenge equals
+  // the hash of {document_hash, parent_assignment_hash, principal} — so it provably binds the artifact.
+  document_hash?: string;
+  signature?: ValDelegatorSignature;
 }
 
 export interface ValVerificationResult {
@@ -902,6 +907,42 @@ export async function verifyValChain(
                 sequenceNumber: seqStr,
                 reason: `container_owner COMMUNICATION principal '${block.principal}' is not the attested container owner (sha256(principal id) != subject_user_hash)`,
               };
+            }
+          }
+        }
+      }
+
+      // ── §4.3 CONSENT — per-action signature pass (§5.2 A+/A++). The bond's trust: the embedded
+      // `signature` MUST be a valid WebAuthn assertion whose challenge equals the hash of
+      // {document_hash, parent_assignment_hash, principal} — so the signature provably binds the
+      // signed artifact (D1). A CONSENT with no signature, or one that fails, → signature red.
+      // (Lineage + `sign ∈ scope.act` are already checked above via the action-block path.) ──
+      if (block.block_type === 'CONSENT') {
+        const sig = block.signature;
+        if (!sig) {
+          result.signature = 'red';
+          if (!result.firstSignatureViolation) {
+            result.firstSignatureViolation = { sequenceNumber: seqStr, reason: 'CONSENT block carries no per-action signature' };
+          }
+        } else {
+          const challenge = bytesToB64url(
+            await sha256(
+              utf8(
+                jcs({
+                  document_hash: block.document_hash,
+                  parent_assignment_hash: block.parent_assignment_hash,
+                  principal: block.principal,
+                }),
+              ),
+            ),
+          );
+          const v = await verifyDelegatorSignature(sig, challenge);
+          if (v.valid) {
+            if (result.signature === 'none') result.signature = 'green';
+          } else {
+            result.signature = 'red';
+            if (!result.firstSignatureViolation) {
+              result.firstSignatureViolation = { sequenceNumber: seqStr, reason: `CONSENT per-action signature invalid: ${v.reason}` };
             }
           }
         }
