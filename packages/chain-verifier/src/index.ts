@@ -649,36 +649,44 @@ function parseValBlock(canonicalDetails: string): ValBlock | null {
  * human-rooted (Profile A: a non-null `human_attestation`). Fails on a dangling
  * reference, a non-ASSIGNMENT target, an over-deep chain, or a non-human root.
  */
+// Walk the lineage from an action block's parent ASSIGNMENT to the human-rooted ASSIGNMENT, collecting
+// EVERY ancestor's scope (direct parent → root). Evaluating an action against all of these conjunctively
+// IS the §6.7 transitive effective scope (intersection back to root) for subj/act/res/win: the action
+// satisfies the intersection iff it satisfies every ancestor, so a sub-assignment that broadens any of
+// those cannot grant the surplus. `ancestorHashes` (direct parent → root) lets the §6.6 lim aggregate
+// roll up transitively — a descendant counts against every ancestor grant, effective max_count = min.
 function walkLineage(
   startParentHash: string,
   index: Map<string, ValBlock>,
-): { ok: boolean; scopes: ScopePredicate[]; profile: 'A' | 'unknown'; reason: string | null } {
+): { ok: boolean; scopes: ScopePredicate[]; ancestorHashes: string[]; profile: 'A' | 'unknown'; reason: string | null } {
   const scopes: ScopePredicate[] = [];
+  const ancestorHashes: string[] = [];
   let cursor: string | null = startParentHash;
   let depth = 0;
   while (cursor) {
     if (++depth > MAX_LINEAGE_DEPTH) {
-      return { ok: false, scopes, profile: 'unknown', reason: `lineage exceeds max depth ${MAX_LINEAGE_DEPTH}` };
+      return { ok: false, scopes, ancestorHashes, profile: 'unknown', reason: `lineage exceeds max depth ${MAX_LINEAGE_DEPTH}` };
     }
     const a = index.get(cursor);
     if (!a) {
-      return { ok: false, scopes, profile: 'unknown', reason: `parent_assignment_hash '${cursor.slice(0, 12)}…' references no ASSIGNMENT in the chain (orphan)` };
+      return { ok: false, scopes, ancestorHashes, profile: 'unknown', reason: `parent_assignment_hash '${cursor.slice(0, 12)}…' references no ASSIGNMENT in the chain (orphan)` };
     }
     if (a.block_type !== 'ASSIGNMENT') {
-      return { ok: false, scopes, profile: 'unknown', reason: `parent_assignment_hash resolves to a ${a.block_type}, not an ASSIGNMENT` };
+      return { ok: false, scopes, ancestorHashes, profile: 'unknown', reason: `parent_assignment_hash resolves to a ${a.block_type}, not an ASSIGNMENT` };
     }
+    ancestorHashes.push(cursor);
     if (a.scope) scopes.push(a.scope);
     const next: string | null = a.parent_assignment_hash ?? null;
     if (!next) {
       // root ASSIGNMENT — require human attestation (Profile A).
       if (!a.human_attestation) {
-        return { ok: false, scopes, profile: 'unknown', reason: 'root ASSIGNMENT has no human_attestation (not human-rooted)' };
+        return { ok: false, scopes, ancestorHashes, profile: 'unknown', reason: 'root ASSIGNMENT has no human_attestation (not human-rooted)' };
       }
-      return { ok: true, scopes, profile: 'A', reason: null };
+      return { ok: true, scopes, ancestorHashes, profile: 'A', reason: null };
     }
     cursor = next;
   }
-  return { ok: false, scopes, profile: 'unknown', reason: 'lineage terminated without a root ASSIGNMENT' };
+  return { ok: false, scopes, ancestorHashes, profile: 'unknown', reason: 'lineage terminated without a root ASSIGNMENT' };
 }
 
 /** Evaluate §6.6 satisfaction of an action block against one ASSIGNMENT scope. */
@@ -784,8 +792,9 @@ export async function verifyValChain(
   // ACCESS block earlier in this chain. Populated as we walk in sequence order; a later MUTATION
   // that cites grounded_document_hashes must cite content present here for the same principal.
   const accessByPrincipal = new Map<string, Set<string>>();
-  // §6.6 lim.max_count: running count of action blocks rooting in each grant; the (max_count+1)-th
-  // block over a grant's limit is the violation. Single-hop today (direct children = all descendants).
+  // §6.6 lim.max_count: running count of an ASSIGNMENT's DESCENDANT action blocks, keyed by ancestor
+  // hash; the (max_count+1)-th descendant is the violation. Transitive (§6.7): a leaf action increments
+  // every ancestor in its lineage, so a grandchild counts against the root grant's max_count.
   const limCounts = new Map<string, number>();
 
   for (const { row, block } of blocks) {
@@ -816,6 +825,10 @@ export async function verifyValChain(
       if (walk.profile === 'A') profiles.add('A');
 
       // ── Pass 3 — scope (effective = satisfy every ASSIGNMENT scope on the path) ──
+      // §6.7 effective scope: evaluate the action against EVERY ancestor scope (direct parent → root)
+      // — the transitive intersection for subj/act/res/win. The action passes only if it clears each
+      // ancestor, so a sub-assignment that broadens any of these cannot grant the surplus; the literal
+      // child scope is never trusted alone.
       for (const scope of walk.scopes) {
         const sat = await satisfies(block, scope);
         if (!sat.ok) {
@@ -828,21 +841,20 @@ export async function verifyValChain(
       }
 
       // ── §6.6 lim.max_count — aggregate over a grant's descendant action blocks (verifier-side,
-      // detective). Running count: the (max_count+1)-th action block rooting in a grant is the
-      // violation. Direct-parent count = full descendant count under single-hop. ──
-      {
-        const grant = index.get(block.parent_assignment_hash);
-        const maxCount = grant?.scope?.lim?.max_count;
-        if (grant?.block_type === 'ASSIGNMENT' && typeof maxCount === 'number') {
-          const c = (limCounts.get(block.parent_assignment_hash) ?? 0) + 1;
-          limCounts.set(block.parent_assignment_hash, c);
-          if (c > maxCount && result.scope === 'green') {
-            result.scope = 'red';
-            result.firstScopeViolation = {
-              sequenceNumber: seqStr,
-              reason: `lim.max_count ${maxCount} exceeded: ${c} action blocks root in this grant`,
-            };
-          }
+      // detective), TRANSITIVE per §6.7: a leaf action counts against EVERY ancestor grant in its
+      // lineage, so a grandchild is constrained by the root grant's max_count (effective = min over the
+      // path). The (max_count+1)-th descendant of any ancestor grant is the violation. ──
+      for (const ah of walk.ancestorHashes) {
+        const maxCount = index.get(ah)?.scope?.lim?.max_count;
+        if (typeof maxCount !== 'number') continue;
+        const c = (limCounts.get(ah) ?? 0) + 1;
+        limCounts.set(ah, c);
+        if (c > maxCount && result.scope === 'green') {
+          result.scope = 'red';
+          result.firstScopeViolation = {
+            sequenceNumber: seqStr,
+            reason: `lim.max_count ${maxCount} exceeded: ${c} action blocks in this grant's descendants`,
+          };
         }
       }
 
