@@ -94,3 +94,24 @@ test('Profile A (no signature) => conformance A, signature none', async () => {
   assert.equal(r.conformanceProfile, 'A');
   assert.equal(r.signature, 'none');
 });
+
+// 0.6.0 — rootSubject surfaces the root human's DECLARED identity (already hash-bound in
+// canonical_details). Additive: it changes output, never a verdict.
+test('0.6.0 rootSubject => surfaced from the root human_attestation.identity_assurance (source verbatim)', async () => {
+  const a = await makeSignedAssignment({});
+  delete a.human_attestation.delegator_authority.signature;
+  delete a.human_attestation.delegator_authority.org_root;
+  a.human_attestation.identity_assurance = { source: 'self_asserted', subject_claim: 'Marie Dupont' };
+  const r = await verifyValChain(await mkRow(a));
+  assert.deepEqual(r.rootSubject, { subject_claim: 'Marie Dupont', source: 'self_asserted' });
+  assert.equal(r.conformanceProfile, 'A'); // verdict unaffected — a name with no signature stays A
+  assert.equal(r.integrity, 'green');
+});
+
+test('0.6.0 rootSubject => null when the root carries no identity_assurance (pre-declaration chains)', async () => {
+  const a = await makeSignedAssignment({});
+  delete a.human_attestation.delegator_authority.signature;
+  delete a.human_attestation.delegator_authority.org_root;
+  const r = await verifyValChain(await mkRow(a));
+  assert.equal(r.rootSubject, null);
+});

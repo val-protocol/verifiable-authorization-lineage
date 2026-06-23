@@ -573,7 +573,16 @@ export interface ValBlock {
   // (`agent:<sa>` | `user:<id>`). Every action block rooting here must carry `principal == grantee`.
   grantee?: string;
   scope?: ScopePredicate;
-  human_attestation?: { method?: string; subject_user_hash?: string; delegator_authority?: ValBlockDelegatorAuthority } | null;
+  human_attestation?: {
+    method?: string;
+    subject_user_hash?: string;
+    delegator_authority?: ValBlockDelegatorAuthority;
+    // 0.6.0: the root human's DECLARED name carried on the attestation (same {source, subject_claim}
+    // shape as the org_root path). Hash-bound in canonical_details since the producer added it; the
+    // verifier now SURFACES it as result.rootSubject. `source` stays 'self_asserted' at the floor —
+    // a device signature proves key-control, not name-truth.
+    identity_assurance?: { source?: string; subject_claim?: string } | null;
+  } | null;
   parent_assignment_hash?: string | null;
   // action blocks:
   action?: string;
@@ -618,6 +627,15 @@ export interface ValVerificationResult {
   keyBinding: ValKeyBinding | null;
   /** Conformance profile read from the root ASSIGNMENTs (§5.2): highest of A/B/C present. */
   conformanceProfile: 'A' | 'B' | 'C' | 'unknown';
+  /**
+   * 0.6.0 — the root human's DECLARED identity, read from the root ASSIGNMENT's
+   * `human_attestation.identity_assurance` ({ subject_claim, source }). This is the name the lineage
+   * roots in (hash-bound in canonical_details; the verifier re-derives integrity over those bytes).
+   * `source` ('self_asserted' | 'kyb_attested' | 'eidas_eaa' | 'qes') is surfaced verbatim so a
+   * consumer NEVER reads a self-asserted name as a vouched identity. `null` when the root carries no
+   * identity_assurance (pre-0.6.0 / pre-declaration chains). Additive — does not affect any verdict.
+   */
+  rootSubject: { subject_claim: string; source: string } | null;
   firstLineageViolation: { sequenceNumber: string; reason: string } | null;
   firstScopeViolation: { sequenceNumber: string; reason: string } | null;
   firstGroundingViolation: { sequenceNumber: string; reason: string } | null;
@@ -767,6 +785,7 @@ export async function verifyValChain(
     signature: 'none',
     keyBinding: null,
     conformanceProfile: 'unknown',
+    rootSubject: null,
     firstLineageViolation: null,
     firstScopeViolation: null,
     firstGroundingViolation: null,
@@ -1078,6 +1097,13 @@ export async function verifyValChain(
         }
       } else {
         profiles.add('A');
+        // 0.6.0 — surface the root human's declared identity (hash-bound in this block's
+        // canonical_details, already integrity-checked). First human-rooted root wins; `source`
+        // verbatim (never round a self_asserted name up to vouched).
+        const ia = block.human_attestation.identity_assurance;
+        if (!result.rootSubject && ia?.subject_claim) {
+          result.rootSubject = { subject_claim: ia.subject_claim, source: ia.source ?? 'self_asserted' };
+        }
       }
     }
   }
