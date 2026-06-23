@@ -25,8 +25,8 @@ function signAssertion(challenge, priv, pub) {
 async function makeSignedAssignment({ keyBinding = 'device_bound', delegationKey, relabelBinding } = {}) {
   const root = newKey();
   const rootSpki = spkiB64(root.publicKey);
-  const assurance = { source: 'self_asserted', subject_claim: 'Maître Dupont, notaire' };
-  const orgRootBase = { org_id: 'org-1', signatory_identity_hash: 'sha256:sig', public_key: rootSpki, identity_assurance: assurance, key_binding: keyBinding };
+  const assurance = { source: 'self_asserted', subject_claim: 'John Doe' };
+  const orgRootBase = { org_id: 'org-acme', signatory_identity_hash: 'sha256:sig', public_key: rootSpki, identity_assurance: assurance, key_binding: keyBinding };
   const selfSig = signAssertion(await orgRootBindingChallenge(orgRootBase), root.privateKey, root.publicKey);
   // relabelBinding: stamp a DIFFERENT key_binding than what was signed (tamper).
   const org_root = { ...orgRootBase, key_binding: relabelBinding ?? keyBinding, self_signature: selfSig };
@@ -101,9 +101,9 @@ test('0.6.0 rootSubject => surfaced from the root human_attestation.identity_ass
   const a = await makeSignedAssignment({});
   delete a.human_attestation.delegator_authority.signature;
   delete a.human_attestation.delegator_authority.org_root;
-  a.human_attestation.identity_assurance = { source: 'self_asserted', subject_claim: 'Marie Dupont' };
+  a.human_attestation.identity_assurance = { source: 'self_asserted', subject_claim: 'John Doe' };
   const r = await verifyValChain(await mkRow(a));
-  assert.deepEqual(r.rootSubject, { subject_claim: 'Marie Dupont', source: 'self_asserted' });
+  assert.deepEqual(r.rootSubject, { subject_claim: 'John Doe', source: 'self_asserted' });
   assert.equal(r.conformanceProfile, 'A'); // verdict unaffected — a name with no signature stays A
   assert.equal(r.integrity, 'green');
 });

@@ -169,6 +169,24 @@ signature AND its linkage to the self-attested org-root, returning the same `dev
 binding surfaced verbatim. `orgRootBindingChallenge` lets you independently re-derive (and thus
 audit) the exact preimage the org-root `self_signature` commits to.
 
+### Root subject (v0.6.0)
+
+`verifyValChain` surfaces the root human's **declared identity** so consumers don't have to
+re-parse `canonical_details`:
+
+```ts
+const result = await verifyValChain(rows);
+// result.rootSubject → { subject_claim: string; source: string } | null
+//   e.g. { subject_claim: 'John Doe', source: 'self_asserted' }
+```
+
+It is read from the first human-rooted ASSIGNMENT's
+`human_attestation.identity_assurance.subject_claim`, which is already hash-bound in that block's
+`canonical_details` and integrity-checked by passes 1–3 — so surfacing it adds no new trust. `source`
+is reported **verbatim** (a `self_asserted` name is never rounded up to `vouched`), and `rootSubject`
+is `null` for pre-declaration chains that carry no `identity_assurance`. This is an additive,
+output-only field; it changes no verdict.
+
 ## Partial-slice verification
 
 A slice that does NOT include the genesis row can still be verified — only the genesis invariant (step 1) is skipped. The caller is responsible for trusting the slice's starting row (e.g., from an externally-anchored sequence_number, or by independent verification of an earlier overlapping slice).
