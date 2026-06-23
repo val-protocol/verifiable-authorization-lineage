@@ -13,9 +13,43 @@
   `reconstructChainHash`, `verifyChain`, `verifyValChain`, `verifyMembershipProof`,
   `computeMembershipRoot`, `orgRootBindingChallenge`, `verifyDelegatorSignature`,
   `verifyDelegationTrustChain`.
-- **No behavior change.** Byte-identical hashes and verdicts: the full test suite (integrity,
-  lineage, scope, grounding, authority, and the ES256 Profile-B signature path — Node-generated
-  ECDSA-P256 DER signatures verified through the new Web-Crypto path) passes unchanged after `await`.
+- **New verification behavior can turn a previously-`green` chain `red`.** 0.5.0 adds the
+  scope/authority/consent checks under Features below. A chain that passed under 0.4.0 may now
+  report `scope: 'red'`, `signature: 'red'`, or an authority/lineage violation if it relied on
+  behavior the verifier did not previously enforce (e.g. a sub-assignment granting more than its
+  parent, or a v≥3 grant whose action principal ≠ grantee). Intentional; it rides the 0.5.0
+  breaking boundary.
+
+### Features (new verification behavior — parity with the operator backend mirror)
+
+- **Agent-equity (Pass-3 ↔ Pass-5 boundary).** Every action block rooting in a **v≥3** ASSIGNMENT
+  must carry `principal == grantee` ("it's THIS actor's own mandate"). New `grantee` field on the
+  ValBlock shape; v1/v2 grants carry no grantee and are grandfathered. An external zero-trust
+  auditor now gets the agent-equity check, not just the backend.
+- **§6.6 temporal window (`win`).** `satisfies()` enforces `not_before ≤ timestamp_local ≤
+  not_after` where bounds are present, **fail-closed** when a scope is windowed but the action is
+  unstamped. New `ValBlock.timestamp_local` + `ScopePredicate.win`. Mirrors the operator's
+  preventive PG-trigger comparison over the same field.
+- **§6.6 count limit (`lim.max_count`).** Running per-grant action count in `verifyValChain`; the
+  `(max_count + 1)`-th action block rooting in a grant is the violation (verifier-side aggregate).
+  New `ScopePredicate.lim` (`max_value` / `max_value_currency` typed but deployment-specific).
+- **§6.7 transitive effective scope.** `walkLineage` returns the ancestor path; a leaf is
+  evaluated **conjunctively against every ancestor** (subj/act/res/win) — it passes only if it
+  clears each one, so a sub-assignment cannot grant more than its parent had. `lim` is transitive
+  too: a grandchild is bounded by the root grant's `max_count` (effective = min over the path).
+- **CONSENT block per-action signature (§4.2 / §5.2).** A CONSENT block's embedded per-action
+  signature is verified offline: the consent challenge is recomputed over `{document_hash,
+  parent_assignment_hash, principal}` and the embedded WebAuthn assertion validated against its
+  public key (reusing the delegator-signature path), binding the signed `document_hash`. New
+  `document_hash` + `signature` on the CONSENT ValBlock shape; valid → `signature: green`, a
+  signature over a different document → `red`.
+
+### Note
+
+- The **isomorphic crypto migration itself is verdict-preserving** — byte-identical hashes and
+  verdicts (SHA-256, ECDSA-P256, ADR-0007 preimage, §6.4 Merkle, §5.2 signature logic unchanged),
+  proven by the full suite passing after `await`. The verdict changes above come from the NEW
+  checks, not from the Node→Web-Crypto swap.
 
 ## 0.4.0 — 2026-06-14
 
