@@ -203,7 +203,7 @@ const consentParent = () => ({
 test('CONSENT: per-action signature over the bound document => signature green', async () => {
   const k = newKey();
   const a = await mkRow(1, null, 'assign', consentParent());
-  const principal = 'user:alice';
+  const principal = 'user:u-1';
   const document_hash = 'doc-abc';
   const consent = {
     v: 1, block_type: 'CONSENT', parent_assignment_hash: a.chain_hash, action: 'sign',
@@ -220,7 +220,7 @@ test('CONSENT: per-action signature over the bound document => signature green',
 test('CONSENT: signature over a DIFFERENT document => signature red', async () => {
   const k = newKey();
   const a = await mkRow(1, null, 'assign', consentParent());
-  const principal = 'user:alice';
+  const principal = 'user:u-1';
   // The signature commits to 'doc-OTHER' but the block binds 'doc-abc' → challenge mismatch.
   const consent = {
     v: 1, block_type: 'CONSENT', parent_assignment_hash: a.chain_hash, action: 'sign',
@@ -237,7 +237,7 @@ test('CONSENT: block carries no per-action signature => signature red', async ()
   const a = await mkRow(1, null, 'assign', consentParent());
   const consent = {
     v: 1, block_type: 'CONSENT', parent_assignment_hash: a.chain_hash, action: 'sign',
-    principal: 'user:alice', document_hash: 'doc-abc', resource: { content_hash: 'doc-abc', resource_id: 'r', in_workspace: 'w' },
+    principal: 'user:u-1', document_hash: 'doc-abc', resource: { content_hash: 'doc-abc', resource_id: 'r', in_workspace: 'w' },
   };
   const b = await mkRow(2, a.chain_hash, 'consent', consent);
   const r = await verifyValChain([a, b]);
