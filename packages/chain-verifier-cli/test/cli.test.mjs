@@ -11,9 +11,9 @@ import { reconstructChainHash } from '@val-protocol/chain-verifier';
 const SCOPE = 's-cli-smoke';
 const CLI = new URL('../dist/cli.js', import.meta.url).pathname;
 
-function mkRow(seq, prev, eventType, details) {
+async function mkRow(seq, prev, eventType, details) {
   const canonical_details = JSON.stringify(details);
-  const chain_hash = reconstructChainHash({
+  const chain_hash = await reconstructChainHash({
     scopeKey: SCOPE,
     sequenceNumber: seq,
     eventType,
@@ -30,8 +30,8 @@ function chainFile(rows) {
   return p;
 }
 
-const a = mkRow(1, null, 'genesis', { v: 1 });
-const b = mkRow(2, a.chain_hash, 'event.two', { v: 1, n: 2 });
+const a = await mkRow(1, null, 'genesis', { v: 1 });
+const b = await mkRow(2, a.chain_hash, 'event.two', { v: 1, n: 2 });
 
 test('clean chain => exit 0, all PASS', () => {
   const out = execFileSync(process.execPath, [CLI, `--export=${chainFile([a, b])}`], { encoding: 'utf8' });

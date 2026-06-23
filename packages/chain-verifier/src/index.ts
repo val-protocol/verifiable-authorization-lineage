@@ -18,7 +18,78 @@
  * contract is "verify these rows against the preimage construction in §4."
  */
 
-import { createHash, createPublicKey, createVerify } from 'crypto';
+// ── Isomorphic crypto (Web Crypto + Uint8Array) — runs in Node 18+ AND browsers, zero deps.
+// `crypto.subtle` and `atob`/`btoa` are global in both. The hash/verify fns are therefore
+// async; this is the only API shape difference from the prior Node-only build. ──
+const _enc = /* @__PURE__ */ new TextEncoder();
+function utf8(s: string): Uint8Array {
+  return _enc.encode(s);
+}
+function bytesToHex(b: Uint8Array): string {
+  let h = '';
+  for (let i = 0; i < b.length; i++) h += b[i].toString(16).padStart(2, '0');
+  return h;
+}
+function hexToBytes(h: string): Uint8Array {
+  const out = new Uint8Array(h.length >> 1);
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(h.slice(i << 1, (i << 1) + 2), 16);
+  return out;
+}
+function concatBytes(...arrs: Uint8Array[]): Uint8Array {
+  let len = 0;
+  for (const a of arrs) len += a.length;
+  const out = new Uint8Array(len);
+  let o = 0;
+  for (const a of arrs) {
+    out.set(a, o);
+    o += a.length;
+  }
+  return out;
+}
+/** base64 OR base64url → bytes. */
+function b64ToBytes(s: string): Uint8Array {
+  const bin = atob(s.replace(/-/g, '+').replace(/_/g, '/'));
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+/** bytes → base64url (no padding). */
+function bytesToB64url(b: Uint8Array): string {
+  let bin = '';
+  for (let i = 0; i < b.length; i++) bin += String.fromCharCode(b[i]);
+  return btoa(bin).replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
+}
+/** Coerce a Uint8Array to a fresh ArrayBuffer for Web Crypto — sidesteps TS 5.7's
+ *  `Uint8Array<ArrayBufferLike>` ≠ `BufferSource` generic (our arrays are never shared). */
+function ab(u: Uint8Array): ArrayBuffer {
+  return u.buffer.slice(u.byteOffset, u.byteOffset + u.byteLength) as ArrayBuffer;
+}
+async function sha256(data: Uint8Array): Promise<Uint8Array> {
+  return new Uint8Array(await crypto.subtle.digest('SHA-256', ab(data)));
+}
+/** DER-encoded ECDSA signature (SEQUENCE{ INTEGER r, INTEGER s }) → raw r‖s (64 bytes),
+ *  the IEEE-P1363 form Web Crypto's ECDSA verify expects. P-256 DER sigs are short-form. */
+function derToRawEcdsaSig(der: Uint8Array): Uint8Array {
+  if (der[0] !== 0x30) throw new Error('invalid DER ECDSA signature');
+  let off = 2; // short-form SEQUENCE length (P-256 sig total < 128 bytes)
+  if (der[off] !== 0x02) throw new Error('invalid DER ECDSA signature (r)');
+  const rlen = der[off + 1];
+  const r = der.slice(off + 2, off + 2 + rlen);
+  off = off + 2 + rlen;
+  if (der[off] !== 0x02) throw new Error('invalid DER ECDSA signature (s)');
+  const slen = der[off + 1];
+  const s = der.slice(off + 2, off + 2 + slen);
+  const to32 = (x: Uint8Array): Uint8Array => {
+    let i = 0;
+    while (i < x.length - 1 && x[i] === 0) i++; // strip DER sign-padding zeros
+    x = x.slice(i);
+    if (x.length > 32) x = x.slice(x.length - 32);
+    const out = new Uint8Array(32);
+    out.set(x, 32 - x.length);
+    return out;
+  };
+  return concatBytes(to32(r), to32(s));
+}
 
 /** One row of a chain, in the shape required for verification. */
 export interface ChainRow {
@@ -58,13 +129,13 @@ export interface ChainRow {
  *     COALESCE(previous_hash, 'GENESIS')
  *   )
  */
-export function reconstructChainHash(args: {
+export async function reconstructChainHash(args: {
   scopeKey: string;
   sequenceNumber: number | bigint;
   eventType: string;
   canonicalDetails: string;
   previousHash: string | null;
-}): string {
+}): Promise<string> {
   const prevComponent = args.previousHash ?? 'GENESIS';
   const preimage =
     args.scopeKey +
@@ -76,7 +147,7 @@ export function reconstructChainHash(args: {
     args.canonicalDetails +
     '|' +
     prevComponent;
-  return createHash('sha256').update(preimage, 'utf8').digest('hex');
+  return bytesToHex(await sha256(utf8(preimage)));
 }
 
 /**
@@ -91,23 +162,23 @@ export function reconstructChainHash(args: {
  * root with byte-identical leaf / concat / sort rules (VAL §6.4) for this
  * re-derivation to match.
  */
-export function computeMembershipRoot(contentHashes: string[]): string | null {
+export async function computeMembershipRoot(contentHashes: string[]): Promise<string | null> {
   const set = Array.from(new Set(contentHashes.filter((h) => h != null)));
   set.sort(); // bytewise on ASCII-hex; matches PG ORDER BY ... COLLATE "C"
   if (set.length === 0) return null;
-  let level: Buffer[] = set.map((h) => createHash('sha256').update(h, 'utf8').digest());
+  let level: Uint8Array[] = await Promise.all(set.map((h) => sha256(utf8(h))));
   while (level.length > 1) {
-    const next: Buffer[] = [];
+    const next: Uint8Array[] = [];
     for (let i = 0; i < level.length; i += 2) {
       if (i + 1 < level.length) {
-        next.push(createHash('sha256').update(Buffer.concat([level[i], level[i + 1]])).digest());
+        next.push(await sha256(concatBytes(level[i], level[i + 1])));
       } else {
         next.push(level[i]);
       }
     }
     level = next;
   }
-  return level[0].toString('hex');
+  return bytesToHex(level[0]);
 }
 
 /** One step of a VAL §6.4 Merkle inclusion proof (sibling node hash + its side). */
@@ -124,20 +195,20 @@ export interface MembershipProofStep {
  *
  * MUST match the producer's membership-proof construction byte-for-byte (VAL §6.4).
  */
-export function verifyMembershipProof(
+export async function verifyMembershipProof(
   contentHash: string,
   proof: MembershipProofStep[],
   expectedRoot: string,
-): boolean {
-  let cur: Buffer = createHash('sha256').update(contentHash, 'utf8').digest();
+): Promise<boolean> {
+  let cur: Uint8Array = await sha256(utf8(contentHash));
   for (const step of proof) {
-    const sib = Buffer.from(step.hash, 'hex');
+    const sib = hexToBytes(step.hash);
     cur =
       step.side === 'L'
-        ? createHash('sha256').update(Buffer.concat([sib, cur])).digest()
-        : createHash('sha256').update(Buffer.concat([cur, sib])).digest();
+        ? await sha256(concatBytes(sib, cur))
+        : await sha256(concatBytes(cur, sib));
   }
-  return cur.toString('hex') === expectedRoot;
+  return bytesToHex(cur) === expectedRoot;
 }
 
 /** Result of verifying a contiguous slice of a chain. */
@@ -169,7 +240,7 @@ export interface VerificationResult {
  * TSA-anchored sequence_number per the external-anchor spec §8) or
  * chains back to a row they have already trusted.
  */
-export function verifyChain(rows: ChainRow[]): VerificationResult {
+export async function verifyChain(rows: ChainRow[]): Promise<VerificationResult> {
   if (rows.length === 0) {
     return { ok: true, firstBadIndex: null, reason: null };
   }
@@ -222,7 +293,7 @@ export function verifyChain(rows: ChainRow[]): VerificationResult {
     }
 
     // Step 3: preimage reconstruction + SHA-256 match.
-    const expected = reconstructChainHash({
+    const expected = await reconstructChainHash({
       scopeKey: row.scope_key,
       sequenceNumber: row.sequence_number,
       eventType: row.event_type,
@@ -261,6 +332,13 @@ export interface ScopePredicate {
     isolation?: string | null;
     isolation_commitment?: string | null;
   };
+  // VAL §6.2/§6.6 temporal window (unix ms). Checked in `satisfies` against the block's
+  // `timestamp_local` — the same field the operator's PG trigger enforces preventively.
+  win?: { not_before?: number; not_after?: number };
+  // VAL §6.2/§6.6 quantitative limits. The §6.6 aggregate over a grant's descendants is the verifier's
+  // job (detective) — `max_count` is checked in verifyValChain (cross-block). `max_value`/
+  // `max_value_currency` aggregate over SETTLEMENT descendants (operator-deployment-specific).
+  lim?: { max_count?: number; max_value?: number; max_value_currency?: string };
 }
 
 /** Identity-assurance basis of a self-attested signing key (§5.2). `source` widens with the
@@ -332,19 +410,12 @@ export interface ValBlockDelegatorAuthority {
 // a trust-anchor input (like the §7.1(d) policy / QTSP list), a future strengthening. The
 // device-bound/syncable org-root verdict does NOT depend on it.
 
-/** Decode base64 OR base64url to a Buffer. */
-function b64ToBuf(s: string): Buffer {
-  return Buffer.from(s.replace(/-/g, '+').replace(/_/g, '/'), 'base64');
-}
-function toB64Url(b: Buffer): string {
-  return b.toString('base64').replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
-}
 function normB64Url(s: string): string {
   return s.replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
 }
 /** Normalize a key to compare regardless of base64/base64url encoding. */
 function normKey(spkiB64: string): string {
-  return b64ToBuf(spkiB64).toString('base64');
+  return bytesToB64url(b64ToBytes(spkiB64));
 }
 
 /** Minimal RFC 8785 (JCS) canonical JSON: keys sorted by UTF-16 code unit (JS default
@@ -360,10 +431,10 @@ function jcs(value: unknown): string {
 
 /** The challenge the org-root self-attestation signs — re-derivable by any verifier from
  *  the attestation fields (so key_binding / identity cannot be relabeled without breaking it). */
-export function orgRootBindingChallenge(o: ValOrgRootAttestation): string {
-  return toB64Url(
-    createHash('sha256')
-      .update(
+export async function orgRootBindingChallenge(o: ValOrgRootAttestation): Promise<string> {
+  return bytesToB64url(
+    await sha256(
+      utf8(
         jcs({
           identity_assurance: {
             source: o.identity_assurance.source,
@@ -374,23 +445,23 @@ export function orgRootBindingChallenge(o: ValOrgRootAttestation): string {
           public_key: o.public_key,
           signatory_identity_hash: o.signatory_identity_hash,
         }),
-      )
-      .digest(),
+      ),
+    ),
   );
 }
 
 /** Verify a WebAuthn (ES256) delegator assertion against its embedded public key. When
  *  `expectedChallengeB64Url` is given, also require clientDataJSON.challenge to match it. */
-export function verifyDelegatorSignature(
+export async function verifyDelegatorSignature(
   sig: ValDelegatorSignature,
   expectedChallengeB64Url?: string,
-): { valid: boolean; reason: string } {
+): Promise<{ valid: boolean; reason: string }> {
   try {
     if (!sig || sig.alg !== 'webauthn') return { valid: false, reason: `unsupported alg: ${sig?.alg}` };
-    const clientDataJson = b64ToBuf(sig.client_data_json);
+    const clientDataJson = b64ToBytes(sig.client_data_json);
     let clientData: { type?: string; challenge?: string };
     try {
-      clientData = JSON.parse(clientDataJson.toString('utf8'));
+      clientData = JSON.parse(new TextDecoder().decode(clientDataJson));
     } catch {
       return { valid: false, reason: 'clientDataJSON not parseable' };
     }
@@ -400,11 +471,21 @@ export function verifyDelegatorSignature(
         return { valid: false, reason: 'challenge mismatch (signature is for a different statement)' };
       }
     }
-    const authData = b64ToBuf(sig.authenticator_data);
-    const cdjHash = createHash('sha256').update(clientDataJson).digest();
-    const signedBytes = Buffer.concat([authData, cdjHash]);
-    const pubKey = createPublicKey({ key: b64ToBuf(sig.public_key), format: 'der', type: 'spki' });
-    const ok = createVerify('sha256').update(signedBytes).verify({ key: pubKey, dsaEncoding: 'der' }, b64ToBuf(sig.signature));
+    // WebAuthn signed bytes = authenticatorData || SHA-256(clientDataJSON); the ECDSA-P256
+    // signature is over SHA-256(signedBytes). Web Crypto's verify hashes signedBytes itself
+    // (hash:'SHA-256'), so we pass signedBytes — and convert the DER signature to raw r‖s.
+    const authData = b64ToBytes(sig.authenticator_data);
+    const cdjHash = await sha256(clientDataJson);
+    const signedBytes = concatBytes(authData, cdjHash);
+    const pubKey = await crypto.subtle.importKey(
+      'spki',
+      ab(b64ToBytes(sig.public_key)),
+      { name: 'ECDSA', namedCurve: 'P-256' },
+      false,
+      ['verify'],
+    );
+    const rawSig = derToRawEcdsaSig(b64ToBytes(sig.signature));
+    const ok = await crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, pubKey, ab(rawSig), ab(signedBytes));
     return ok
       ? { valid: true, reason: 'signature valid against embedded public key' }
       : { valid: false, reason: 'signature does not verify against embedded public key' };
@@ -428,24 +509,24 @@ export type TrustChainOutcome =
 /** Verify a Profile B/C delegation: the signature is a valid assertion by the enrolled,
  *  self-attested org-root key. Returns the honest outcome (device_bound vs syncable, or
  *  signature_valid_only when the org-root linkage is absent/broken). */
-export function verifyDelegationTrustChain(
+export async function verifyDelegationTrustChain(
   delegationSig: ValDelegatorSignature,
   orgRoot?: ValOrgRootAttestation | null,
-): {
+): Promise<{
   signatureValid: boolean;
   linkageVerified: boolean;
   outcome: TrustChainOutcome;
   keyBinding: ValKeyBinding | null;
   subjectAssurance: ValIdentityAssurance | null;
   reason: string;
-} {
+}> {
   const base = { keyBinding: null as ValKeyBinding | null, subjectAssurance: null as ValIdentityAssurance | null };
   // Profile C (qualified) — classified, but its QTSP-anchored verification is a future
   // trust-anchor input. Surface honestly rather than silently passing or failing.
   if (QUALIFIED_ALGS.has(delegationSig?.alg)) {
     return { ...base, signatureValid: false, linkageVerified: false, outcome: 'qualified_unverified', reason: `qualified alg '${delegationSig.alg}' requires a QTSP trust list (not supplied) — Profile C classified, not verified` };
   }
-  const sigCheck = verifyDelegatorSignature(delegationSig);
+  const sigCheck = await verifyDelegatorSignature(delegationSig);
   if (!sigCheck.valid) {
     return { ...base, signatureValid: false, linkageVerified: false, outcome: 'invalid', reason: `delegation signature invalid: ${sigCheck.reason}` };
   }
@@ -454,7 +535,7 @@ export function verifyDelegationTrustChain(
   if (!orgRoot.identity_assurance || (orgRoot.key_binding !== 'device_bound' && orgRoot.key_binding !== 'syncable')) {
     return notLinked('org-root attestation missing identity_assurance / key_binding');
   }
-  const selfCheck = verifyDelegatorSignature(orgRoot.self_signature, orgRootBindingChallenge(orgRoot));
+  const selfCheck = await verifyDelegatorSignature(orgRoot.self_signature, await orgRootBindingChallenge(orgRoot));
   if (!selfCheck.valid) return notLinked(`org-root self-attestation invalid: ${selfCheck.reason}`);
   if (normKey(orgRoot.self_signature.public_key) !== normKey(orgRoot.public_key)) {
     return notLinked('org-root attestation is not self-signed (attesting key != attested key)');
@@ -488,17 +569,37 @@ export interface ValBlock {
   v?: number;
   block_type?: 'ASSIGNMENT' | 'ACCESS' | 'MUTATION' | 'CONSENT' | 'COMMUNICATION' | 'SETTLEMENT' | 'ANCHOR';
   // ASSIGNMENT:
+  // Agent-equity carrier (v3 ASSIGNMENT): the principal this grant authorizes
+  // (`agent:<sa>` | `user:<id>`). Every action block rooting here must carry `principal == grantee`.
+  grantee?: string;
   scope?: ScopePredicate;
-  human_attestation?: { method?: string; subject_user_hash?: string; delegator_authority?: ValBlockDelegatorAuthority } | null;
+  human_attestation?: {
+    method?: string;
+    subject_user_hash?: string;
+    delegator_authority?: ValBlockDelegatorAuthority;
+    // 0.6.0: the root human's DECLARED name carried on the attestation (same {source, subject_claim}
+    // shape as the org_root path). Hash-bound in canonical_details since the producer added it; the
+    // verifier now SURFACES it as result.rootSubject. `source` stays 'self_asserted' at the floor —
+    // a device signature proves key-control, not name-truth.
+    identity_assurance?: { source?: string; subject_claim?: string } | null;
+  } | null;
   parent_assignment_hash?: string | null;
   // action blocks:
   action?: string;
   principal?: string;
+  // VAL §6.6/§8 timestamp_local — operator-supplied unix ms (an operator convention; the spec leaves the unit unspecified), carried ON the block. The §6.6 win check
+  // compares it to scope.win.{not_before,not_after}; the operator's PG trigger reads this same field.
+  timestamp_local?: number;
   resource?: { content_hash?: string; resource_id?: string; in_workspace?: string };
   membership_proof?: MembershipProofStep[];
   // §7.5 grounding: content-hashes this MUTATION asserts it derived from. The verifier checks each
   // was read via a prior ACCESS by the same principal in this chain (read-before-derive).
   grounded_document_hashes?: string[] | null;
+  // §4.3 CONSENT (sign-class): the single signed-artifact hash bound directly by the bond, and the
+  // per-action human signature over it (§5.2). The verifier checks the signature's challenge equals
+  // the hash of {document_hash, parent_assignment_hash, principal} — so it provably binds the artifact.
+  document_hash?: string;
+  signature?: ValDelegatorSignature;
 }
 
 export interface ValVerificationResult {
@@ -526,6 +627,15 @@ export interface ValVerificationResult {
   keyBinding: ValKeyBinding | null;
   /** Conformance profile read from the root ASSIGNMENTs (§5.2): highest of A/B/C present. */
   conformanceProfile: 'A' | 'B' | 'C' | 'unknown';
+  /**
+   * 0.6.0 — the root human's DECLARED identity, read from the root ASSIGNMENT's
+   * `human_attestation.identity_assurance` ({ subject_claim, source }). This is the name the lineage
+   * roots in (hash-bound in canonical_details; the verifier re-derives integrity over those bytes).
+   * `source` ('self_asserted' | 'kyb_attested' | 'eidas_eaa' | 'qes') is surfaced verbatim so a
+   * consumer NEVER reads a self-asserted name as a vouched identity. `null` when the root carries no
+   * identity_assurance (pre-0.6.0 / pre-declaration chains). Additive — does not affect any verdict.
+   */
+  rootSubject: { subject_claim: string; source: string } | null;
   firstLineageViolation: { sequenceNumber: string; reason: string } | null;
   firstScopeViolation: { sequenceNumber: string; reason: string } | null;
   firstGroundingViolation: { sequenceNumber: string; reason: string } | null;
@@ -562,40 +672,48 @@ function parseValBlock(canonicalDetails: string): ValBlock | null {
  * human-rooted (Profile A: a non-null `human_attestation`). Fails on a dangling
  * reference, a non-ASSIGNMENT target, an over-deep chain, or a non-human root.
  */
+// Walk the lineage from an action block's parent ASSIGNMENT to the human-rooted ASSIGNMENT, collecting
+// EVERY ancestor's scope (direct parent → root). Evaluating an action against all of these conjunctively
+// IS the §6.7 transitive effective scope (intersection back to root) for subj/act/res/win: the action
+// satisfies the intersection iff it satisfies every ancestor, so a sub-assignment that broadens any of
+// those cannot grant the surplus. `ancestorHashes` (direct parent → root) lets the §6.6 lim aggregate
+// roll up transitively — a descendant counts against every ancestor grant, effective max_count = min.
 function walkLineage(
   startParentHash: string,
   index: Map<string, ValBlock>,
-): { ok: boolean; scopes: ScopePredicate[]; profile: 'A' | 'unknown'; reason: string | null } {
+): { ok: boolean; scopes: ScopePredicate[]; ancestorHashes: string[]; profile: 'A' | 'unknown'; reason: string | null } {
   const scopes: ScopePredicate[] = [];
+  const ancestorHashes: string[] = [];
   let cursor: string | null = startParentHash;
   let depth = 0;
   while (cursor) {
     if (++depth > MAX_LINEAGE_DEPTH) {
-      return { ok: false, scopes, profile: 'unknown', reason: `lineage exceeds max depth ${MAX_LINEAGE_DEPTH}` };
+      return { ok: false, scopes, ancestorHashes, profile: 'unknown', reason: `lineage exceeds max depth ${MAX_LINEAGE_DEPTH}` };
     }
     const a = index.get(cursor);
     if (!a) {
-      return { ok: false, scopes, profile: 'unknown', reason: `parent_assignment_hash '${cursor.slice(0, 12)}…' references no ASSIGNMENT in the chain (orphan)` };
+      return { ok: false, scopes, ancestorHashes, profile: 'unknown', reason: `parent_assignment_hash '${cursor.slice(0, 12)}…' references no ASSIGNMENT in the chain (orphan)` };
     }
     if (a.block_type !== 'ASSIGNMENT') {
-      return { ok: false, scopes, profile: 'unknown', reason: `parent_assignment_hash resolves to a ${a.block_type}, not an ASSIGNMENT` };
+      return { ok: false, scopes, ancestorHashes, profile: 'unknown', reason: `parent_assignment_hash resolves to a ${a.block_type}, not an ASSIGNMENT` };
     }
+    ancestorHashes.push(cursor);
     if (a.scope) scopes.push(a.scope);
     const next: string | null = a.parent_assignment_hash ?? null;
     if (!next) {
       // root ASSIGNMENT — require human attestation (Profile A).
       if (!a.human_attestation) {
-        return { ok: false, scopes, profile: 'unknown', reason: 'root ASSIGNMENT has no human_attestation (not human-rooted)' };
+        return { ok: false, scopes, ancestorHashes, profile: 'unknown', reason: 'root ASSIGNMENT has no human_attestation (not human-rooted)' };
       }
-      return { ok: true, scopes, profile: 'A', reason: null };
+      return { ok: true, scopes, ancestorHashes, profile: 'A', reason: null };
     }
     cursor = next;
   }
-  return { ok: false, scopes, profile: 'unknown', reason: 'lineage terminated without a root ASSIGNMENT' };
+  return { ok: false, scopes, ancestorHashes, profile: 'unknown', reason: 'lineage terminated without a root ASSIGNMENT' };
 }
 
 /** Evaluate §6.6 satisfaction of an action block against one ASSIGNMENT scope. */
-function satisfies(block: ValBlock, scope: ScopePredicate): { ok: boolean; reason: string | null } {
+async function satisfies(block: ValBlock, scope: ScopePredicate): Promise<{ ok: boolean; reason: string | null }> {
   if (scope.subj?.principal_uri && block.principal && block.principal !== scope.subj.principal_uri) {
     return { ok: false, reason: `principal '${block.principal}' != scope subj '${scope.subj.principal_uri}'` };
   }
@@ -616,8 +734,22 @@ function satisfies(block: ValBlock, scope: ScopePredicate): { ok: boolean; reaso
     if (!ch || !block.membership_proof) {
       return { ok: false, reason: 'ACCESS under isolation_commitment has no resource content_hash + membership_proof' };
     }
-    if (!verifyMembershipProof(ch, block.membership_proof, res.isolation_commitment)) {
+    if (!(await verifyMembershipProof(ch, block.membership_proof, res.isolation_commitment))) {
       return { ok: false, reason: 'membership_proof does not re-derive the committed isolation root (isolation violation)' };
+    }
+  }
+  // §6.6 temporal window: `not_before ≤ timestamp_local ≤ not_after` (where bounds are present).
+  // timestamp_local is unix ms (an operator convention; spec §6.6 bounds are unit-agnostic) — the same field the operator's PG trigger enforces preventively.
+  if (scope.win && (typeof scope.win.not_before === 'number' || typeof scope.win.not_after === 'number')) {
+    const ts = block.timestamp_local;
+    if (typeof ts !== 'number') {
+      return { ok: false, reason: 'scope.win present but block carries no timestamp_local (§6.6, unverifiable window)' };
+    }
+    if (typeof scope.win.not_before === 'number' && ts < scope.win.not_before) {
+      return { ok: false, reason: `timestamp_local ${ts} is before win.not_before ${scope.win.not_before}` };
+    }
+    if (typeof scope.win.not_after === 'number' && ts > scope.win.not_after) {
+      return { ok: false, reason: `timestamp_local ${ts} is after win.not_after ${scope.win.not_after}` };
     }
   }
   return { ok: true, reason: null };
@@ -640,10 +772,10 @@ function satisfies(block: ValBlock, scope: ScopePredicate): { ok: boolean; reaso
  * `options` is additive; existing callers are unaffected. Input MUST be the same
  * partitioned, sorted, contiguous slice verifyChain requires.
  */
-export function verifyValChain(
+export async function verifyValChain(
   rows: ChainRow[],
   options?: { delegatorAuthorityPolicy?: DelegatorAuthorityPolicy },
-): ValVerificationResult {
+): Promise<ValVerificationResult> {
   const result: ValVerificationResult = {
     integrity: 'green',
     lineage: 'green',
@@ -653,6 +785,7 @@ export function verifyValChain(
     signature: 'none',
     keyBinding: null,
     conformanceProfile: 'unknown',
+    rootSubject: null,
     firstLineageViolation: null,
     firstScopeViolation: null,
     firstGroundingViolation: null,
@@ -663,7 +796,7 @@ export function verifyValChain(
   };
 
   // Pass 1 — integrity.
-  const integrity = verifyChain(rows);
+  const integrity = await verifyChain(rows);
   if (!integrity.ok) {
     result.integrity = 'red';
     return result; // integrity is prerequisite; no point walking a broken chain.
@@ -683,6 +816,10 @@ export function verifyValChain(
   // ACCESS block earlier in this chain. Populated as we walk in sequence order; a later MUTATION
   // that cites grounded_document_hashes must cite content present here for the same principal.
   const accessByPrincipal = new Map<string, Set<string>>();
+  // §6.6 lim.max_count: running count of an ASSIGNMENT's DESCENDANT action blocks, keyed by ancestor
+  // hash; the (max_count+1)-th descendant is the violation. Transitive (§6.7): a leaf action increments
+  // every ancestor in its lineage, so a grandchild counts against the root grant's max_count.
+  const limCounts = new Map<string, number>();
 
   for (const { row, block } of blocks) {
     if (!block) continue;
@@ -712,14 +849,55 @@ export function verifyValChain(
       if (walk.profile === 'A') profiles.add('A');
 
       // ── Pass 3 — scope (effective = satisfy every ASSIGNMENT scope on the path) ──
+      // §6.7 effective scope: evaluate the action against EVERY ancestor scope (direct parent → root)
+      // — the transitive intersection for subj/act/res/win. The action passes only if it clears each
+      // ancestor, so a sub-assignment that broadens any of these cannot grant the surplus; the literal
+      // child scope is never trusted alone.
       for (const scope of walk.scopes) {
-        const sat = satisfies(block, scope);
+        const sat = await satisfies(block, scope);
         if (!sat.ok) {
           if (result.scope === 'green') {
             result.scope = 'red';
             result.firstScopeViolation = { sequenceNumber: seqStr, reason: sat.reason ?? 'scope violation' };
           }
           break;
+        }
+      }
+
+      // ── §6.6 lim.max_count — aggregate over a grant's descendant action blocks (verifier-side,
+      // detective), TRANSITIVE per §6.7: a leaf action counts against EVERY ancestor grant in its
+      // lineage, so a grandchild is constrained by the root grant's max_count (effective = min over the
+      // path). The (max_count+1)-th descendant of any ancestor grant is the violation. ──
+      for (const ah of walk.ancestorHashes) {
+        const maxCount = index.get(ah)?.scope?.lim?.max_count;
+        if (typeof maxCount !== 'number') continue;
+        const c = (limCounts.get(ah) ?? 0) + 1;
+        limCounts.set(ah, c);
+        if (c > maxCount && result.scope === 'green') {
+          result.scope = 'red';
+          result.firstScopeViolation = {
+            sequenceNumber: seqStr,
+            reason: `lim.max_count ${maxCount} exceeded: ${c} action blocks in this grant's descendants`,
+          };
+        }
+      }
+
+      // ── Agent-equity — `action.principal == grant.grantee`. The action roots directly in the
+      // actor's grant; a v>=3 ASSIGNMENT names its grantee, so the action's principal MUST equal it
+      // ("it's THIS actor's own mandate"). v1/v2 grants carry no grantee → grandfathered. ──
+      {
+        const grant = index.get(block.parent_assignment_hash);
+        const grantV = grant?.v ?? 1;
+        if (grant?.block_type === 'ASSIGNMENT' && grantV >= 3 && grant.grantee) {
+          if (block.principal !== grant.grantee) {
+            result.authority = 'red';
+            if (!result.firstAuthorityViolation) {
+              result.firstAuthorityViolation = {
+                sequenceNumber: seqStr,
+                reason: `agent-equity: action principal '${block.principal ?? '(none)'}' != grant grantee '${grant.grantee}' (v${grantV} ASSIGNMENT)`,
+              };
+            }
+          }
         }
       }
 
@@ -740,9 +918,7 @@ export function verifyValChain(
           block.principal.startsWith('user:')
         ) {
           const subjectHash = parent.human_attestation?.subject_user_hash;
-          const principalHash = createHash('sha256')
-            .update(block.principal.slice('user:'.length), 'utf8')
-            .digest('hex');
+          const principalHash = bytesToHex(await sha256(utf8(block.principal.slice('user:'.length))));
           if (!subjectHash || principalHash !== subjectHash) {
             result.authority = 'red';
             if (!result.firstAuthorityViolation) {
@@ -750,6 +926,42 @@ export function verifyValChain(
                 sequenceNumber: seqStr,
                 reason: `container_owner COMMUNICATION principal '${block.principal}' is not the attested container owner (sha256(principal id) != subject_user_hash)`,
               };
+            }
+          }
+        }
+      }
+
+      // ── §4.3 CONSENT — per-action signature pass (§5.2 A+/A++). The bond's trust: the embedded
+      // `signature` MUST be a valid WebAuthn assertion whose challenge equals the hash of
+      // {document_hash, parent_assignment_hash, principal} — so the signature provably binds the
+      // signed artifact (D1). A CONSENT with no signature, or one that fails, → signature red.
+      // (Lineage + `sign ∈ scope.act` are already checked above via the action-block path.) ──
+      if (block.block_type === 'CONSENT') {
+        const sig = block.signature;
+        if (!sig) {
+          result.signature = 'red';
+          if (!result.firstSignatureViolation) {
+            result.firstSignatureViolation = { sequenceNumber: seqStr, reason: 'CONSENT block carries no per-action signature' };
+          }
+        } else {
+          const challenge = bytesToB64url(
+            await sha256(
+              utf8(
+                jcs({
+                  document_hash: block.document_hash,
+                  parent_assignment_hash: block.parent_assignment_hash,
+                  principal: block.principal,
+                }),
+              ),
+            ),
+          );
+          const v = await verifyDelegatorSignature(sig, challenge);
+          if (v.valid) {
+            if (result.signature === 'none') result.signature = 'green';
+          } else {
+            result.signature = 'red';
+            if (!result.firstSignatureViolation) {
+              result.firstSignatureViolation = { sequenceNumber: seqStr, reason: `CONSENT per-action signature invalid: ${v.reason}` };
             }
           }
         }
@@ -849,7 +1061,7 @@ export function verifyValChain(
         const dsig = block.human_attestation?.delegator_authority?.signature;
         if (dsig) {
           const oroot = block.human_attestation?.delegator_authority?.org_root ?? null;
-          const tc = verifyDelegationTrustChain(dsig, oroot);
+          const tc = await verifyDelegationTrustChain(dsig, oroot);
           if (tc.outcome === 'qualified_unverified') {
             // Profile C: CLASSIFIED (declared). Its crypto verification needs a QTSP trust
             // list — a future trust-anchor input, never a silent default. Conformance
@@ -885,6 +1097,13 @@ export function verifyValChain(
         }
       } else {
         profiles.add('A');
+        // 0.6.0 — surface the root human's declared identity (hash-bound in this block's
+        // canonical_details, already integrity-checked). First human-rooted root wins; `source`
+        // verbatim (never round a self_asserted name up to vouched).
+        const ia = block.human_attestation.identity_assurance;
+        if (!result.rootSubject && ia?.subject_claim) {
+          result.rootSubject = { subject_claim: ia.subject_claim, source: ia.source ?? 'self_asserted' };
+        }
       }
     }
   }

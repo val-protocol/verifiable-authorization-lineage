@@ -1,5 +1,43 @@
 # @val-protocol/chain-verifier — CHANGELOG
 
+## 0.6.0 — 2026-06-23
+
+### Features
+
+- **`rootSubject` — the root human's declared identity, surfaced (additive, output-only).** The
+  name the root human declared (`human_attestation.identity_assurance.subject_claim`) is already
+  hash-bound in the root ASSIGNMENT's `canonical_details` and integrity-checked by passes 1–3;
+  0.6.0 surfaces it on the report so consumers don't have to re-parse `canonical_details`:
+  - `ValVerificationResult` gains `rootSubject: { subject_claim: string; source: string } | null`,
+    set from the first human-rooted ASSIGNMENT's `human_attestation.identity_assurance`
+    (first human root wins). `source` is surfaced **verbatim** — a `self_asserted` name is never
+    rounded up to `vouched`.
+  - `ValBlock.human_attestation` gains the optional carrier this is read from:
+    `identity_assurance?: { source, subject_claim }`.
+  - `rootSubject` is `null` when the root carries no `identity_assurance` (pre-declaration chains).
+- **No verdict changes.** `integrity` / `lineage` / `scope` / `grounding` / `authority` /
+  `signature` / `conformanceProfile` are byte-for-byte unaffected — `rootSubject` is purely an
+  additional output field. Full suite passes (24/24), including two new rootSubject cases
+  (surfaced-from-root, and null-when-absent). Proven against a live RIGA chain:
+  `rootSubject = { "John Doe", "self_asserted" }`, integrity green.
+
+## 0.5.0 — 2026-06-16
+
+### Breaking
+
+- **Isomorphic crypto (runs in the browser now); the verify API is `async`.** The verifier was
+  Node-only (`node:crypto` `createHash`/`createPublicKey`/`createVerify` + `Buffer`), so it could
+  not run in a browser — the "verify client-side without trusting the operator" promise was only
+  deliverable from Node (the CLI). It now uses the **Web Crypto API** (`crypto.subtle`) +
+  `Uint8Array`, available in Node 18+ AND browsers, with **zero new dependencies**. Because
+  `crypto.subtle` is async, the verification functions now return `Promise` and must be `await`ed:
+  `reconstructChainHash`, `verifyChain`, `verifyValChain`, `verifyMembershipProof`,
+  `computeMembershipRoot`, `orgRootBindingChallenge`, `verifyDelegatorSignature`,
+  `verifyDelegationTrustChain`.
+- **No behavior change.** Byte-identical hashes and verdicts: the full test suite (integrity,
+  lineage, scope, grounding, authority, and the ES256 Profile-B signature path — Node-generated
+  ECDSA-P256 DER signatures verified through the new Web-Crypto path) passes unchanged after `await`.
+
 ## 0.4.0 — 2026-06-14
 
 ### Features
