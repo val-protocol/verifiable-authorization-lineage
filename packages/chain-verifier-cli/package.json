@@ -42,7 +42,7 @@
     "@val-protocol/chain-verifier": "^0.6.0"
   },
   "devDependencies": {
-    "@types/node": "^20.0.0",
+    "@types/node": "^20.19.43",
     "typescript": "^5.0.0"
   },
   "engines": {
