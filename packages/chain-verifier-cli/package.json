@@ -39,7 +39,7 @@
     "prepublishOnly": "node ../../scripts/verify-example-ids.mjs && npm run build"
   },
   "dependencies": {
-    "@val-protocol/chain-verifier": "^0.2.0"
+    "@val-protocol/chain-verifier": "^0.6.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
