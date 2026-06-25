@@ -1,0 +1,25 @@
+# Dependabot — supply-chain hygiene for a PUBLISHED protocol package (OWASP MCP04).
+# @val-protocol/* deps ship to external developers, so security advisories here
+# matter more than for a private repo. chain-verifier itself has zero runtime
+# deps by design (Charter §II claim #12); this mainly covers devDeps + actions.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+    commit-message:
+      prefix: chore(deps)
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+      - ci
+    commit-message:
+      prefix: chore(ci)
