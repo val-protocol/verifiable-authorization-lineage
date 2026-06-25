@@ -15,6 +15,11 @@ jobs:
           node-version: "20"
       - name: Install
         run: npm ci # lockfile-enforced; the artifact built/tested matches the committed lock (OWASP MCP04)
+      - name: Audit dependencies (block high/critical — OWASP MCP04)
+        # Blocking SCA gate on a PUBLISHED package: deps ship to external developers, so a
+        # high/critical advisory must fail CI, not just open a Dependabot PR. high+critical only
+        # (sub-high advisories like dev-tool lows don't gate). Verified green at add time.
+        run: npm audit --audit-level=high
       - name: Example-id leak gate
         run: node scripts/verify-example-ids.mjs
       - name: Build (all packages)
