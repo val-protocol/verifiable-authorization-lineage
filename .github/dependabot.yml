@@ -13,6 +13,14 @@ updates:
       - dependencies
     commit-message:
       prefix: chore(deps)
+    ignore:
+      # Major bumps adopted deliberately, not on Dependabot's schedule:
+      # - typescript majors are breaking (TS 6.0 broke the build).
+      # - @types/node must track the runtime (Node 20), not run ahead of it.
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
