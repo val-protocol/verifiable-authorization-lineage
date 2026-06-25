@@ -20,7 +20,7 @@ When a professional delegates work to an AI agent — or simply acts inside a re
 
 ## What VAL Does
 
-VAL records every action as a typed **block** in an append-only, hash-chained **lineage**. Every non-root block must trace, cryptographically, back to a **human-signed root authorization** carrying a machine-checkable **scope predicate** (what the authorization permits). A standalone **offline verifier** re-derives five properties — **integrity, lineage, scope-respect, grounding, and delegator authority** (the issuing human's standing to grant the delegated scope) — from the chain bytes plus a small set of public trust anchors, with **zero reads against the operator**. An optional **external anchor** (RFC 3161 / eIDAS QTSP) provides independent timestamping.
+VAL records every action as a typed **block** in an append-only, hash-chained **lineage**. Every non-root block must trace, cryptographically, back to a **human-signed root authorization** carrying a machine-checkable **scope predicate** (what the authorization permits). A standalone **offline verifier** re-derives five properties — **integrity, lineage, scope-respect, grounding, and delegator authority** (the issuing human's standing to grant the delegated scope) — from the chain bytes plus a small set of public trust anchors, with **zero reads against the operator**. *Grounding* means the actor **read a content-address before deriving from it** (read-before-derive, chain-internal); it does not by itself tie that content-address to a particular file. An optional sixth pass — **bytes-binding** (§7.2 Pass 6) — adds that tie: it matches a content-address to a specific document produced as evidence, via a *hiding commitment* re-derived from a `{ bytes, nonce }` disclosure at evidence time, still with zero operator reads. An optional **external anchor** (RFC 3161 / eIDAS QTSP) provides independent timestamping.
 
 **In scope:** the canonical wire format for attestation blocks; the lineage invariant (every non-assignment block traces to a human-signed root); a minimal scope-predicate language; the offline verifier procedure; the optional external timestamp anchor; six action classes (read, write, assign, sign, send, settle).
 
@@ -59,7 +59,7 @@ The reference packages live under [`packages/`](packages/) (Apache-2.0, publishe
 
 | Package | Purpose |
 |---|---|
-| [`chain-verifier`](packages/chain-verifier) | the offline verifier — zero runtime dependencies, pure SHA-256 against the canonical preimage; implements passes 1–3 (integrity, lineage, scope) plus the grounding re-derivation and pass 5 (delegator authority, §7.2), emitting conformance profile A |
+| [`chain-verifier`](packages/chain-verifier) | the offline verifier — zero runtime dependencies, pure SHA-256 against the canonical preimage; implements passes 1–3 (integrity, lineage, scope) plus the grounding re-derivation, pass 5 (delegator authority, §7.2), and pass 6 (bytes-binding, §7.2 — optional, evidence-time), emitting conformance profile A |
 | [`webhook-receiver`](packages/webhook-receiver) | reference receiver for signed chain-event webhooks — HMAC verification, rotation grace, replay protection, chain-link extraction. Delivery transport tooling (transport is §1.2 out-of-scope for the normative protocol) |
 
 The verifier is transport- and producer-agnostic: it consumes exported chain bytes and re-derives the protocol's properties without contacting any operator. Chain producers and API clients are deployment-specific and live with each operator's stack, not in this protocol repository.

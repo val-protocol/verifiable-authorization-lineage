@@ -67,6 +67,25 @@ function ab(u: Uint8Array): ArrayBuffer {
 async function sha256(data: Uint8Array): Promise<Uint8Array> {
   return new Uint8Array(await crypto.subtle.digest('SHA-256', ab(data)));
 }
+
+// ── Pass 6 (bytes-binding, §7.2 / ADR 0061) ──────────────────────────────────
+// A MUTATION MAY carry a hiding `bytes_commitment` over the document's bytes:
+//   value = SHA-256( "val.bytes-commitment.v1" ‖ 0x00 ‖ nonce(32B) ‖ SHA-256(file_bytes)(32B) )
+// The nonce is held producer-side (never on chain / in any export), so the on-chain
+// commitment leaks nothing — even a public export is not a cross-tenant oracle. It is
+// re-derived ONLY at evidence time from a disclosed { bytes, nonce } (zero-trust: the
+// disclosed nonce is a self-authenticating witness; collision-resistance binds the frozen
+// commitment to exactly one file). The verifier hashes the BYTES itself — it never trusts
+// a supplied hash.
+const BYTES_COMMITMENT_TAG = /* @__PURE__ */ utf8('val.bytes-commitment.v1');
+async function recomputeBytesCommitment(
+  bytes: Uint8Array,
+  nonce: Uint8Array,
+): Promise<string> {
+  const inner = await sha256(bytes); // SHA-256(file_bytes), 32 raw bytes
+  const preimage = concatBytes(BYTES_COMMITMENT_TAG, new Uint8Array([0x00]), nonce, inner);
+  return bytesToHex(await sha256(preimage));
+}
 /** DER-encoded ECDSA signature (SEQUENCE{ INTEGER r, INTEGER s }) → raw r‖s (64 bytes),
  *  the IEEE-P1363 form Web Crypto's ECDSA verify expects. P-256 DER sigs are short-form. */
 function derToRawEcdsaSig(der: Uint8Array): Uint8Array {
@@ -595,6 +614,9 @@ export interface ValBlock {
   // §7.5 grounding: content-hashes this MUTATION asserts it derived from. The verifier checks each
   // was read via a prior ACCESS by the same principal in this chain (read-before-derive).
   grounded_document_hashes?: string[] | null;
+  // §4.4 + ADR 0061: optional hiding bytes-commitment over the document's bytes (Pass 6). Opt-in;
+  // re-derived only at evidence time from a disclosed { bytes, nonce }. `value` is 64-char hex.
+  bytes_commitment?: { alg?: string; value?: string } | null;
   // §4.3 CONSENT (sign-class): the single signed-artifact hash bound directly by the bond, and the
   // per-action human signature over it (§5.2). The verifier checks the signature's challenge equals
   // the hash of {document_hash, parent_assignment_hash, principal} — so it provably binds the artifact.
@@ -641,6 +663,16 @@ export interface ValVerificationResult {
   firstGroundingViolation: { sequenceNumber: string; reason: string } | null;
   firstAuthorityViolation: { sequenceNumber: string; reason: string } | null;
   firstSignatureViolation: { sequenceNumber: string; reason: string } | null;
+  /**
+   * Pass 6 (bytes-binding, §7.2 / ADR 0061): a MUTATION's `bytes_commitment` re-derived from a
+   * disclosed { bytes, nonce } (see verifyValChain `options.bytesDisclosures`). OPT-IN and additive:
+   * `'bound'` = at least one commitment was disclosed and every disclosed one matched; `'mismatch'`
+   * = a disclosed commitment failed to reproduce (the bytes are NOT the committed document);
+   * `'not_evaluated'` = no MUTATION carried both a commitment and a matching disclosure. Absence
+   * NEVER fails the verdict — bytes-binding is a separate, evidence-time rail.
+   */
+  bytesBinding: 'bound' | 'mismatch' | 'not_evaluated';
+  firstBytesBindingViolation: { sequenceNumber: string; reason: string } | null;
   /**
    * Pre-carrier (v1) ASSIGNMENT bodies lacking delegator_authority — tolerated (chain
    * bytes are immutable) but counted, so a report states exactly how much of the chain
@@ -774,7 +806,17 @@ async function satisfies(block: ValBlock, scope: ScopePredicate): Promise<{ ok: 
  */
 export async function verifyValChain(
   rows: ChainRow[],
-  options?: { delegatorAuthorityPolicy?: DelegatorAuthorityPolicy },
+  options?: {
+    delegatorAuthorityPolicy?: DelegatorAuthorityPolicy;
+    /**
+     * ADR 0061 Pass 6 — evidence-time bytes-binding disclosures, one per document the auditor holds.
+     * `documentBytesBase64` is the file the auditor produced as evidence; `nonceHex` is the room-side
+     * nonce disclosed in the evidence bundle (never on chain). The verifier hashes the bytes itself
+     * and recomputes the hiding commitment — it never trusts a supplied hash. Keyed by `resourceId`
+     * (the MUTATION's `resource.resource_id`).
+     */
+    bytesDisclosures?: Array<{ resourceId: string; documentBytesBase64: string; nonceHex: string }>;
+  },
 ): Promise<ValVerificationResult> {
   const result: ValVerificationResult = {
     integrity: 'green',
@@ -791,9 +833,21 @@ export async function verifyValChain(
     firstGroundingViolation: null,
     firstAuthorityViolation: null,
     firstSignatureViolation: null,
+    bytesBinding: 'not_evaluated',
+    firstBytesBindingViolation: null,
     legacyPreAuthorityAssignmentCount: 0,
     nonValBlockCount: 0,
   };
+
+  // Pass 6 disclosure map (ADR 0061). Decoded once; null when the caller supplied none.
+  const bytesDisclosures = options?.bytesDisclosures
+    ? new Map(
+        options.bytesDisclosures.map((d) => [
+          d.resourceId,
+          { bytes: b64ToBytes(d.documentBytesBase64), nonce: hexToBytes(d.nonceHex) },
+        ]),
+      )
+    : null;
 
   // Pass 1 — integrity.
   const integrity = await verifyChain(rows);
@@ -995,6 +1049,30 @@ export async function verifyValChain(
             sequenceNumber: seqStr,
             reason: `MUTATION cites ${ungrounded.length} grounded hash(es) with no prior ACCESS by principal '${block.principal ?? '(none)'}' in this chain (first: ${(ungrounded[0] ?? '').slice(0, 12)}…)`,
           };
+        }
+      }
+
+      // ── Pass 6 (bytes-binding, ADR 0061) — opt-in, evidence-time. A MUTATION carrying a
+      // hiding `bytes_commitment` is bound to real file bytes ONLY via a disclosed { bytes, nonce }
+      // (room-side nonce, never on chain). The verifier hashes the bytes itself and recomputes the
+      // commitment. No commitment or no matching disclosure ⇒ not evaluated (never a failure),
+      // per §4.4 optional-field semantics. A mismatch is sticky (a later bind cannot clear it).
+      if (block.block_type === 'MUTATION' && block.bytes_commitment?.value && bytesDisclosures) {
+        const rid = block.resource?.resource_id;
+        const disc = rid ? bytesDisclosures.get(rid) : undefined;
+        if (disc) {
+          const recomputed = await recomputeBytesCommitment(disc.bytes, disc.nonce);
+          if (recomputed === block.bytes_commitment.value.toLowerCase()) {
+            if (result.bytesBinding === 'not_evaluated') result.bytesBinding = 'bound';
+          } else {
+            result.bytesBinding = 'mismatch';
+            if (!result.firstBytesBindingViolation) {
+              result.firstBytesBindingViolation = {
+                sequenceNumber: seqStr,
+                reason: `bytes_commitment mismatch for resource ${rid ?? '(none)'} — disclosed bytes+nonce do not reproduce the on-chain commitment`,
+              };
+            }
+          }
         }
       }
     } else if (isAssignment) {

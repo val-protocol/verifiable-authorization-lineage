@@ -85,7 +85,7 @@ This is the sole canonical hash domain for VAL v0.1. There is **no per-block sig
 ```
 `action` ∈ {`read`, `view`, `list`, `search`}. `membership_proof` is the §6.4 Merkle inclusion proof of `resource.content_hash` against the assignment's committed `isolation_commitment`, present only when the assignment is isolation-scoped (`null` = the resource is outside the committed set).
 
-**MUTATION** — a state change rooted in an ASSIGNMENT (§6.6: satisfied by lineage + action + container, never a membership proof). Same resource clause as ACCESS, minus `membership_proof`, plus an optional `grounded_document_hashes`.
+**MUTATION** — a state change rooted in an ASSIGNMENT (§6.6: satisfied by lineage + action + container, never a membership proof). Same resource clause as ACCESS, minus `membership_proof`, plus an optional `grounded_document_hashes` and an optional `bytes_commitment`.
 ```json
 {
   "v": 1,
@@ -94,10 +94,19 @@ This is the sole canonical hash domain for VAL v0.1. There is **no per-block sig
   "action": "<capability-specific action name>",
   "principal": "<URI>",
   "resource": { "content_hash": "<hex>", "resource_id": "<id>", "in_workspace": "<id>" },
-  "grounded_document_hashes": ["<hex>", "..."]
+  "grounded_document_hashes": ["<hex>", "..."],
+  "bytes_commitment": { "alg": "sha256-nonce.v1", "value": "<hex>" }
 }
 ```
-`action` is a free string the capability defines; the verifier does not enumerate action names. `grounded_document_hashes` is **optional** — present (non-empty) when the mutation derives from content the actor read, omitted or empty when it is not content-derived; §7.5 defines the read-before-derive check over it. Operators MAY carry additional metadata in the canonical object; the verifier neither requires nor evaluates such fields.
+`action` is a free string the capability defines; the verifier does not enumerate action names. `grounded_document_hashes` is **optional** — present (non-empty) when the mutation derives from content the actor read, omitted or empty when it is not content-derived; §7.5 defines the read-before-derive check over it.
+
+`bytes_commitment` is **optional** and carries the **bytes-binding rail** (§7.2 Pass 6): a *hiding* commitment to the document's bytes,
+```
+value = SHA-256( "val.bytes-commitment.v1" ‖ 0x00 ‖ nonce(32 bytes) ‖ SHA-256(file_bytes)(32 bytes) )   // lowercase hex
+```
+where `nonce` is a 32-byte producer-side secret **never carried on the chain or in any export**. The on-chain commitment therefore reveals nothing about the bytes — even a public export is not a cross-tenant confirmation oracle (contrast a plain content hash, which would be). It is re-derived only at evidence time from a disclosed `{ bytes, nonce }` (§7.2 Pass 6); `content_hash` stays the operator's content-address and is unaffected. `alg` identifies the construction (`sha256-nonce.v1`). Omitting the field is conformant; a verifier that does not implement Pass 6 ignores it.
+
+Operators MAY carry additional metadata in the canonical object; the verifier neither requires nor evaluates such fields.
 
 **CONSENT / COMMUNICATION / SETTLEMENT / ANCHOR** — specified as action classes (§4.2) but not emitted by the v0.1 reference producer; the canonical content shape of each is reserved to the capability that introduces it. A conforming implementation that emits them MUST carry `v`, `block_type`, and — for the action classes — `parent_assignment_hash`.
 
