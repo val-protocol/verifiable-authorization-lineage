@@ -1,5 +1,23 @@
 # @val-protocol/chain-verifier — CHANGELOG
 
+## 0.7.0 — 2026-06-26
+
+### Features
+
+- **Pass 6 — bytes-binding (ADR 0061).** A second rail binding a chain content-address to the literal
+  document bytes, re-derivable offline with zero operator trust. `verifyValChain` gains an optional
+  `bytesDisclosures` input — `[{ resourceId, documentBytesBase64, nonceHex }]` — and a
+  `bytesBinding ∈ { bound, mismatch, not_evaluated }` result (+ `firstBytesBindingViolation`). For each
+  MUTATION carrying a hiding `bytes_commitment`, the verifier hashes the disclosed bytes itself (never a
+  supplied hash) and recomputes `SHA-256("val.bytes-commitment.v1" ‖ 0x00 ‖ nonce ‖ SHA-256(bytes))`,
+  comparing to the on-chain value. The opening nonce lives producer-side, never on the chain — so an
+  exported chain is not a cross-tenant confirmation oracle. Opt-in and additive: absent commitment or
+  disclosure ⇒ `not_evaluated`, never a failure; the five core properties are unaffected. `ValBlock`
+  gains the optional `bytes_commitment?: { alg?, value? }` carrier.
+- **No verdict changes** to integrity / lineage / scope / grounding / authority / signature. Full suite
+  green (41/41), with 5 new bytes-binding cases (bound / mismatch-bytes / mismatch-nonce / not-evaluated×2).
+  Spec: VAL §4.4 + §7.2 Pass 6.
+
 ## 0.6.0 — 2026-06-23
 
 ### Features
