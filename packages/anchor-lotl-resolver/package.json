@@ -1,0 +1,31 @@
+{
+  "name": "@val-protocol/anchor-lotl-resolver",
+  "version": "0.1.0",
+  "description": "Caller-side EU Trusted List (LOTL) trust resolution for VAL external-anchor qualified timestamps — resolves the anchorTrust SPKI set from an RFC 3161 token bound to the granted CA/root identity at genTime. Zero runtime deps.",
+  "type": "module",
+  "main": "./src/index.mjs",
+  "exports": {
+    ".": "./src/index.mjs"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test"
+  },
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "eidas",
+    "rfc3161",
+    "timestamp",
+    "trusted-list",
+    "lotl",
+    "qtsp",
+    "val-protocol"
+  ],
+  "dependencies": {}
+}
