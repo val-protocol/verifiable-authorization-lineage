@@ -17,12 +17,12 @@ VAL defines seven block types. Six correspond to the protocol's six **action cla
 | ASSIGNMENT | `assign` | Roots a lineage: authorizes a principal within a scope. | **shipped** |
 | ACCESS | `read` | Read / view / list / search of a resource. | **shipped** |
 | MUTATION | `write` | Create / update / delete / classify / rename of a resource. | **shipped** |
-| CONSENT | `sign` | Signature, agreement acceptance, NDA, disclosure attestation. | specified; not yet implemented |
-| COMMUNICATION | `send` | Send, share-link create/access, Q&A post/answer, outbound message. | specified; not yet implemented |
+| CONSENT | `sign` | Signature, agreement acceptance, NDA, disclosure attestation. | verifier implemented; producer reserved |
+| COMMUNICATION | `send` | Send, share-link create/access, Q&A post/answer, outbound message. | verifier implemented; producer reserved |
 | SETTLEMENT | `settle` | Payment, refund, subscription change, invoice. | specified; not yet implemented |
 | ANCHOR | — | External timestamp over a Merkle root of preceding blocks (§8). | specified; not yet implemented |
 
-"Shipped" means the reference producer emits the block and the reference verifier re-derives its properties end-to-end. The four not-yet-implemented types are recognized by the reference verifier's type set (it will verify them if present) but are not emitted by the reference producer; a conforming implementation MAY emit them ahead of this reference. **The block types that ship end-to-end today are ASSIGNMENT, ACCESS, and MUTATION.**
+"Shipped" means the reference producer emits the block and the reference verifier re-derives its properties end-to-end. Beyond the three shipped types, the reference verifier carries **dedicated passes for CONSENT** (per-action WebAuthn/ECDSA signature check) and **COMMUNICATION** (container-owner re-derivation): these are verified if present but are not emitted by the reference producer ("producer reserved"). **SETTLEMENT** is recognized only for generic lineage/scope (no settlement-specific check) and **ANCHOR** is skipped entirely (§7.4). A conforming implementation MAY emit any reserved type ahead of this reference. **The block types that ship end-to-end (reference producer + verifier) today are ASSIGNMENT, ACCESS, and MUTATION; CONSENT and COMMUNICATION are verifier-complete.**
 
 Operators MAY define private block types; a verifier MUST ignore any `block_type` it does not recognize rather than fail.
 
