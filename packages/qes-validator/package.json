@@ -1,0 +1,32 @@
+{
+  "name": "@val-protocol/qes-validator",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Optional eIDAS QES (Qualified Electronic Signature) validator for VAL Profile C. Validates a qualified signature to ETSI standards (X.509-to-LOTL, QcStatements, OCSP/CRL, JAdES, LTV) and emits a reproducible QesValidationReport that the zero-dep @val-protocol/chain-verifier consumes. SCAFFOLD — implementation demand-gated (ADR 0063, S1: wrap EU DSS). NOT published.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/esm/index.js",
+  "types": "./dist/esm/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/esm/index.d.ts",
+      "import": "./dist/esm/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "node --test"
+  },
+  "keywords": [
+    "eidas",
+    "qes",
+    "qualified-electronic-signature",
+    "jades",
+    "ades",
+    "val-protocol"
+  ]
+}

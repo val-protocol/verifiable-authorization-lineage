@@ -1,5 +1,51 @@
 # @val-protocol/chain-verifier — CHANGELOG
 
+## Unreleased (prepare-only) — Profile C QES verdict seam (ADR 0063)
+
+- **Profile C (eIDAS QES) verdict-consumption seam — additive, default-preserving, still zero-dep.**
+  `verifyValChain` gains `options.qesValidation?: { reports: QesVerdict[] }`; `verifyDelegationTrustChain`
+  takes an optional resolved verdict and gains the `authority_verified_qualified` outcome. A qualified
+  delegation with a `qualified: true` verdict (produced caller-side by the new, separate
+  `@val-protocol/qes-validator`) now verifies Profile C — conformance `C`, signature green, the proven
+  natural-person identity surfaced as `rootSubject` (source `qes`). Without a verdict, behaviour is
+  **unchanged**: Profile C stays classified-not-verified (`qualified_unverified`). The core still does NOT
+  do LOTL/X.509/OCSP/AdES — it consumes a reproducible verdict, exactly as Pass 4 consumes `anchorTrust`.
+  Tests: `profile-c-qes.test.mjs` (default classified / verified / false-verdict-not-upgraded), suite 54/54.
+  The `qes-validator` implementation is demand-gated (ADR 0063, S1: wrap EU DSS). PREPARE-ONLY — not
+  versioned/published until the operator sequences it.
+
+## 0.8.0 — 2026-06-27
+
+### Features
+
+- **Pass 4 — external anchor (VAL §8, RFC 3161).** The verifier no longer skips ANCHOR blocks: it
+  re-derives the checkpoint Merkle root over the in-band covered range and verifies the block's
+  RFC 3161 TimeStampToken offline, with **zero new dependencies** (hand-rolled CMS/DER + Web Crypto).
+  `verifyValChain` gains an optional `anchorTrust` input — `{ tsaCertSpkis: string[] }`, a *resolved*
+  set of acceptable TSA signer SPKIs (base64). Phase 1 pins the set directly; in eIDAS deployments the
+  caller resolves the QTSP cert from the EU Trusted List (LOTL) and supplies it already-resolved
+  (identical shape — the verifier never fetches a trust list). New result fields:
+  `anchorBinding ∈ { verified, mismatch, not_evaluated }`, `firstAnchorViolation`, and
+  `anchors: [{ sequenceNumber, genTime, covered_range }]`. `ValBlock` gains the optional
+  `merkle_root` / `merkle_alg` / `covered_range` / `tst` carriers.
+- **Verification (§8.4):** for each ANCHOR block — (1) recompute the `val.checkpoint-merkle.v1` root
+  (leaf `SHA-256("<seq>|<chain_hash>")`, sequence order, promote-odd; a byte-faithful port of the RIGA
+  producer, locked by a shared parity vector) and assert it equals `merkle_root`; (2) assert the token's
+  `messageImprint.hashedMessage` equals that root (the root is the timestamped digest, not re-hashed);
+  (3) verify the CMS signature over the DER `signedAttributes` (re-tagged to SET-OF), with the
+  `message-digest` signed attribute equal to `SHA-256(TSTInfo)`, against a pinned SPKI (RSA PKCS#1-v1.5 /
+  PSS, or ECDSA P-256/384/521); (4) require the signer cert to carry the `id-kp-timeStamping` EKU;
+  (5) surface the attested `genTime`. **Temporal existence only** — no time-policy is evaluated.
+- **Opt-in and additive:** no `anchorTrust`, or a chain with no ANCHOR block ⇒ `not_evaluated`, never a
+  failure; the core verdict (integrity / lineage / scope / grounding / authority / signature / bytes-
+  binding) is unchanged. Still **zero runtime dependencies** (Web Crypto only).
+- **Tests:** full suite **51/51 green** — verified against **real tokens from three independent TSAs**,
+  including a genuinely **eIDAS-qualified** one: DigiCert (RSA-SHA256), FreeTSA (ECDSA-P521-SHA512), and
+  **Sectigo Qualified** (RSA-SHA256; EU Trusted List, ETSI EN 319 422, Policy OID `0.4.0.2023.1.1`) — plus
+  the Merkle parity vector and tamper cases (wrong cert, tampered range, mismatched messageImprint,
+  corrupted token). The qualified token verifies through the identical Pass 4 (the verifier proves
+  `anchorBinding`, never "qualified" — that label is operator-asserted). Spec: VAL §8 + §7.2 Pass 4.
+
 ## 0.7.0 — 2026-06-26
 
 ### Features

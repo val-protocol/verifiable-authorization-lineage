@@ -110,6 +110,382 @@ function derToRawEcdsaSig(der: Uint8Array): Uint8Array {
   return concatBytes(to32(r), to32(s));
 }
 
+// ── Pass 4 (external anchor, §8) — RFC 3161 TimeStampToken verification, zero-dep. ───────────────
+// An ANCHOR block carries an RFC 3161 token (`tst`, base64) over a `val.checkpoint-merkle.v1` Merkle
+// root of a contiguous in-band block range. Pass 4 (a) recomputes that root and (b) verifies the
+// token: a real TSA token is a CMS SignedData whose signature is over the DER `signedAttributes`
+// (NOT over TSTInfo directly), with a `message-digest` signed attribute = SHA-256(TSTInfo); and the
+// token's `messageImprint.hashedMessage` MUST equal the ANCHOR root. Temporal existence only — the
+// attested `genTime` is surfaced, no time-policy is evaluated. The trust anchor is a *resolved* set
+// of acceptable TSA signer SPKIs (pinned in Phase 1; LOTL-resolved caller-side in Phase 2 — identical
+// shape). The ASN.1/DER is hand-parsed (no dependency), like `derToRawEcdsaSig` above.
+
+// OID content bytes (tag/len stripped), lowercase hex.
+const OID_SIGNED_DATA = '2a864886f70d010702';
+const OID_TSTINFO = '2a864886f70d0109100104';
+const OID_MESSAGE_DIGEST_ATTR = '2a864886f70d010904';
+const OID_SHA256 = '608648016503040201';
+const OID_SHA384 = '608648016503040202';
+const OID_SHA512 = '608648016503040203';
+const OID_SHA1 = '2b0e03021a';
+const OID_RSA = '2a864886f70d010101';
+const OID_RSASSA_PSS = '2a864886f70d01010a';
+const OID_EC_PUBKEY = '2a8648ce3d0201';
+const OID_EC_P256 = '2a8648ce3d030107';
+const OID_EC_P384 = '2b81040022';
+const OID_EC_P521 = '2b81040023';
+// id-kp-timeStamping (1.3.6.1.5.5.7.3.8) as a full DER OID TLV — scanned for inside the cert set.
+const EKU_TIMESTAMPING_TLV = hexToBytes('06082b06010505070308');
+
+interface Der {
+  tag: number;
+  start: number; // offset of the tag byte
+  cStart: number; // offset of the first content byte
+  cEnd: number; // offset just past the content (= next TLV start)
+}
+/** Read one DER TLV at `off` (definite length; short or long form). */
+function rd(b: Uint8Array, off: number): Der {
+  const tag = b[off];
+  let i = off + 1;
+  let len = b[i++];
+  if (len & 0x80) {
+    const n = len & 0x7f;
+    if (n === 0 || n > 4) throw new Error('DER: unsupported length form');
+    len = 0;
+    for (let k = 0; k < n; k++) len = (len << 8) | b[i++];
+  }
+  const cStart = i;
+  const cEnd = i + len;
+  if (cEnd > b.length) throw new Error('DER: length exceeds buffer');
+  return { tag, start: off, cStart, cEnd };
+}
+/** All child TLVs of a constructed `der`. */
+function rdChildren(b: Uint8Array, der: Der): Der[] {
+  const out: Der[] = [];
+  let o = der.cStart;
+  while (o < der.cEnd) {
+    const t = rd(b, o);
+    out.push(t);
+    o = t.cEnd;
+  }
+  return out;
+}
+const oidHex = (b: Uint8Array, d: Der): string => bytesToHex(b.subarray(d.cStart, d.cEnd));
+const bytesEqual = (a: Uint8Array, c: Uint8Array): boolean =>
+  a.length === c.length && a.every((x, i) => x === c[i]);
+function indexOfSeq(hay: Uint8Array, needle: Uint8Array): number {
+  outer: for (let i = 0; i + needle.length <= hay.length; i++) {
+    for (let j = 0; j < needle.length; j++) if (hay[i + j] !== needle[j]) continue outer;
+    return i;
+  }
+  return -1;
+}
+function digestNameForOid(oid: string): string {
+  switch (oid) {
+    case OID_SHA256:
+      return 'SHA-256';
+    case OID_SHA384:
+      return 'SHA-384';
+    case OID_SHA512:
+      return 'SHA-512';
+    case OID_SHA1:
+      return 'SHA-1';
+    default:
+      throw new Error(`unsupported digest OID ${oid}`);
+  }
+}
+async function digestBy(name: string, data: Uint8Array): Promise<Uint8Array> {
+  return new Uint8Array(await crypto.subtle.digest(name, ab(data)));
+}
+
+interface ParsedTst {
+  tstInfoBytes: Uint8Array; // the eContent OCTET STRING content (DER TSTInfo)
+  signedAttrs: Der | null; // SignerInfo signedAttrs ([0] IMPLICIT), or null
+  digestOid: string; // SignerInfo digestAlgorithm OID
+  sigAlgOid: string; // SignerInfo signatureAlgorithm OID
+  signature: Uint8Array; // SignerInfo signature (raw OCTET STRING content)
+  certSet: Uint8Array | null; // SignedData.certificates ([0] IMPLICIT) content, for the EKU scan
+}
+/** Parse an RFC 3161 TimeStampToken (CMS SignedData ContentInfo) DER into the parts Pass 4 needs. */
+function parseTimeStampToken(token: Uint8Array): ParsedTst {
+  const ci = rd(token, 0); // ContentInfo SEQUENCE
+  const ciCh = rdChildren(token, ci); // [ contentType OID, [0] EXPLICIT content ]
+  if (oidHex(token, ciCh[0]) !== OID_SIGNED_DATA) throw new Error('TST: contentType is not id-signedData');
+  const signedData = rdChildren(token, ciCh[1])[0]; // SignedData SEQUENCE
+  const sd = rdChildren(token, signedData);
+  // sd: [0]=version, [1]=digestAlgorithms SET, [2]=encapContentInfo, ([0] certs)?, ([1] crls)?, signerInfos SET
+  const encap = sd[2];
+  let certSet: Uint8Array | null = null;
+  for (let k = 3; k < sd.length - 1; k++) {
+    if (sd[k].tag === 0xa0) certSet = token.subarray(sd[k].cStart, sd[k].cEnd); // [0] IMPLICIT certificates
+  }
+  const signerInfos = sd[sd.length - 1]; // SET OF SignerInfo (last element)
+
+  // encapContentInfo: SEQUENCE { eContentType OID, [0] EXPLICIT OCTET STRING }
+  const encapCh = rdChildren(token, encap);
+  if (oidHex(token, encapCh[0]) !== OID_TSTINFO) throw new Error('TST: eContentType is not id-ct-TSTInfo');
+  const octet = rdChildren(token, encapCh[1])[0]; // OCTET STRING holding the TSTInfo DER
+  const tstInfoBytes = token.subarray(octet.cStart, octet.cEnd);
+
+  // signerInfos → first SignerInfo
+  const si = rdChildren(token, rdChildren(token, signerInfos)[0]);
+  // si: version, sid, digestAlgorithm, [signedAttrs 0xA0]?, signatureAlgorithm, signature, [unsignedAttrs]?
+  const digestAlg = si[2];
+  let j = 3;
+  let signedAttrs: Der | null = null;
+  if (si[j].tag === 0xa0) {
+    signedAttrs = si[j];
+    j++;
+  }
+  const sigAlg = si[j++];
+  const signatureOct = si[j++];
+  return {
+    tstInfoBytes,
+    signedAttrs,
+    digestOid: oidHex(token, rdChildren(token, digestAlg)[0]),
+    sigAlgOid: oidHex(token, rdChildren(token, sigAlg)[0]),
+    signature: token.subarray(signatureOct.cStart, signatureOct.cEnd),
+    certSet,
+  };
+}
+
+interface ParsedTstInfo {
+  hashedMessage: Uint8Array; // messageImprint.hashedMessage
+  genTime: string; // ISO 8601, from the GeneralizedTime
+}
+function parseTstInfo(tstInfo: Uint8Array): ParsedTstInfo {
+  const seq = rd(tstInfo, 0);
+  const ch = rdChildren(tstInfo, seq);
+  // version, policy, messageImprint SEQUENCE, serialNumber, genTime GeneralizedTime(0x18), ...
+  const messageImprint = ch[2];
+  const miCh = rdChildren(tstInfo, messageImprint); // [ hashAlgorithm SEQ, hashedMessage OCTET STRING ]
+  const hashedMessage = tstInfo.subarray(miCh[1].cStart, miCh[1].cEnd);
+  const gtDer = ch.find((c, i) => i >= 3 && c.tag === 0x18);
+  if (!gtDer) throw new Error('TSTInfo: no genTime');
+  const raw = new TextDecoder().decode(tstInfo.subarray(gtDer.cStart, gtDer.cEnd)); // e.g. 20260627123456Z or with frac
+  const genTime = generalizedTimeToIso(raw);
+  return { hashedMessage, genTime };
+}
+/** ASN.1 GeneralizedTime (YYYYMMDDHHMMSS[.fff]Z) → ISO 8601. */
+function generalizedTimeToIso(g: string): string {
+  const m = /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(\.\d+)?Z?$/.exec(g);
+  if (!m) return g; // surface verbatim if unexpected
+  return `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}${m[7] ?? ''}Z`;
+}
+
+/** Curve-aware DER ECDSA signature (SEQUENCE{ INTEGER r, INTEGER s }) → raw r‖s, each left-padded to
+ *  `size` bytes (P-256→32, P-384→48, P-521→66). Unlike `derToRawEcdsaSig` (P-256 short-form only),
+ *  this handles long-form lengths and larger curves — required for ECDSA-SHA512 TSA signers. */
+function ecdsaDerToRawSized(der: Uint8Array, size: number): Uint8Array {
+  const seq = rd(der, 0);
+  if (seq.tag !== 0x30) throw new Error('ECDSA sig: expected SEQUENCE');
+  const [rInt, sInt] = rdChildren(der, seq);
+  const pad = (d: Der): Uint8Array => {
+    let bytes = der.subarray(d.cStart, d.cEnd);
+    let i = 0;
+    while (i < bytes.length - 1 && bytes[i] === 0) i++; // strip DER sign-padding
+    bytes = bytes.subarray(i);
+    if (bytes.length > size) bytes = bytes.subarray(bytes.length - size);
+    const out = new Uint8Array(size);
+    out.set(bytes, size - bytes.length);
+    return out;
+  };
+  return concatBytes(pad(rInt), pad(sInt));
+}
+const EC_COMPONENT_SIZE = { 'ec-P256': 32, 'ec-P384': 48, 'ec-P521': 66 } as const;
+
+/** Determine the public-key kind from an SPKI (SubjectPublicKeyInfo) DER. */
+function spkiKeyKind(spki: Uint8Array): 'rsa' | 'ec-P256' | 'ec-P384' | 'ec-P521' {
+  const seq = rd(spki, 0);
+  const algId = rdChildren(spki, seq)[0]; // AlgorithmIdentifier SEQUENCE
+  const algCh = rdChildren(spki, algId);
+  const algOid = oidHex(spki, algCh[0]);
+  if (algOid === OID_RSA) return 'rsa';
+  if (algOid === OID_EC_PUBKEY) {
+    const curveOid = algCh[1] ? oidHex(spki, algCh[1]) : '';
+    if (curveOid === OID_EC_P384) return 'ec-P384';
+    if (curveOid === OID_EC_P521) return 'ec-P521';
+    return 'ec-P256';
+  }
+  throw new Error(`SPKI: unsupported key algorithm OID ${algOid}`);
+}
+/** Verify `sig` over `data` against one pinned SPKI, choosing RSA(PKCS1/PSS) or ECDSA + hash. */
+async function verifySigAgainstSpki(
+  spkiB64: string,
+  digestName: string,
+  sigAlgOid: string,
+  sig: Uint8Array,
+  data: Uint8Array,
+): Promise<boolean> {
+  const spki = b64ToBytes(spkiB64);
+  const kind = spkiKeyKind(spki);
+  if (kind === 'rsa') {
+    if (sigAlgOid === OID_RSASSA_PSS) {
+      const key = await crypto.subtle.importKey('spki', ab(spki), { name: 'RSA-PSS', hash: digestName }, false, ['verify']);
+      const saltLength = digestName === 'SHA-512' ? 64 : digestName === 'SHA-384' ? 48 : digestName === 'SHA-1' ? 20 : 32;
+      return crypto.subtle.verify({ name: 'RSA-PSS', saltLength }, key, ab(sig), ab(data));
+    }
+    const key = await crypto.subtle.importKey('spki', ab(spki), { name: 'RSASSA-PKCS1-v1_5', hash: digestName }, false, ['verify']);
+    return crypto.subtle.verify({ name: 'RSASSA-PKCS1-v1_5' }, key, ab(sig), ab(data));
+  }
+  const namedCurve = kind === 'ec-P384' ? 'P-384' : kind === 'ec-P521' ? 'P-521' : 'P-256';
+  const key = await crypto.subtle.importKey('spki', ab(spki), { name: 'ECDSA', namedCurve }, false, ['verify']);
+  const rawSig = ecdsaDerToRawSized(sig, EC_COMPONENT_SIZE[kind]);
+  return crypto.subtle.verify({ name: 'ECDSA', hash: digestName }, key, ab(rawSig), ab(data));
+}
+
+/** Result of verifying one ANCHOR's RFC 3161 token. */
+interface AnchorTokenResult {
+  ok: boolean;
+  genTime?: string;
+  reason?: string;
+}
+/**
+ * Verify an RFC 3161 token (base64) binds `merkleRootHex` and is signed by a pinned TSA SPKI.
+ * Steps: parse CMS → assert messageImprint.hashedMessage == merkle_root (§8.1) → if signedAttrs
+ * present, assert the `message-digest` attribute == digest(TSTInfo) and verify the signature over
+ * DER(signedAttrs) with the tag re-set to SET-OF (0x31) (the CMS rule); else verify over TSTInfo —
+ * against any pinned SPKI → assert the signer cert carries the id-kp-timeStamping EKU.
+ */
+async function verifyAnchorToken(
+  tstB64: string,
+  merkleRootHex: string,
+  spkis: string[],
+): Promise<AnchorTokenResult> {
+  let p: ParsedTst;
+  let info: ParsedTstInfo;
+  try {
+    const token = b64ToBytes(tstB64);
+    p = parseTimeStampToken(token);
+    info = parseTstInfo(p.tstInfoBytes);
+  } catch (e) {
+    return { ok: false, reason: `malformed RFC 3161 token: ${(e as Error).message}` };
+  }
+
+  // (§8.1 / §2.2) messageImprint binding — the timestamped digest IS the root, not a re-hash.
+  if (bytesToHex(info.hashedMessage) !== merkleRootHex.toLowerCase()) {
+    return { ok: false, reason: `token messageImprint ${bytesToHex(info.hashedMessage).slice(0, 16)}… != ANCHOR merkle_root ${merkleRootHex.slice(0, 16)}…` };
+  }
+
+  let digestName: string;
+  try {
+    digestName = digestNameForOid(p.digestOid);
+  } catch (e) {
+    return { ok: false, reason: (e as Error).message };
+  }
+
+  // (§2.1) Determine the signed bytes. Real TSA tokens sign the DER signedAttributes (re-tagged to
+  // SET OF for the signature), with a message-digest attribute == digest(TSTInfo).
+  let signedBytes: Uint8Array;
+  if (p.signedAttrs) {
+    const token = b64ToBytes(tstB64);
+    const attrs = rdChildren(token, p.signedAttrs); // each is an Attribute SEQUENCE
+    let mdAttr: Uint8Array | null = null;
+    for (const a of attrs) {
+      const ac = rdChildren(token, a); // [ attrType OID, attrValues SET ]
+      if (oidHex(token, ac[0]) === OID_MESSAGE_DIGEST_ATTR) {
+        const val = rdChildren(token, ac[1])[0]; // OCTET STRING
+        mdAttr = token.subarray(val.cStart, val.cEnd);
+      }
+    }
+    if (!mdAttr) return { ok: false, reason: 'signedAttributes missing message-digest attribute' };
+    const tstDigest = await digestBy(digestName, p.tstInfoBytes);
+    if (!bytesEqual(mdAttr, tstDigest)) {
+      return { ok: false, reason: 'message-digest attribute != digest(TSTInfo) (token does not cover its own content)' };
+    }
+    // Re-tag the [0] IMPLICIT signedAttrs to SET OF (0x31) for the signature computation (CMS).
+    signedBytes = token.subarray(p.signedAttrs.start, p.signedAttrs.cEnd).slice();
+    signedBytes[0] = 0x31;
+  } else {
+    signedBytes = p.tstInfoBytes; // no signed attributes: signature is directly over TSTInfo
+  }
+
+  // (§2.3) EKU — the signer certificate must carry id-kp-timeStamping (RFC 3161 §2.3). Scan ONLY the
+  // embedded certificate set for the EKU OID (it lives inside an ExtendedKeyUsage extension). We do not
+  // fall back to scanning the whole token: with no embedded cert there is nothing whose EKU we can
+  // confirm, and scanning the full DER could false-positive on unrelated bytes. (Phase-2 hardening:
+  // bind the EKU to the specific signer cert that produced the verifying signature, not the whole set.)
+  if (!p.certSet) {
+    return { ok: false, reason: 'token embeds no signer certificate (certReq) — cannot confirm the id-kp-timeStamping EKU' };
+  }
+  if (indexOfSeq(p.certSet, EKU_TIMESTAMPING_TLV) < 0) {
+    return { ok: false, reason: 'signer certificate does not carry the id-kp-timeStamping EKU' };
+  }
+
+  // Signature must verify against at least one pinned TSA SPKI (the resolved trust anchor).
+  for (const spki of spkis) {
+    try {
+      if (await verifySigAgainstSpki(spki, digestName, p.sigAlgOid, p.signature, signedBytes)) {
+        return { ok: true, genTime: info.genTime };
+      }
+    } catch {
+      // wrong key kind / unparseable SPKI for this entry — try the next pinned cert
+    }
+  }
+  return { ok: false, reason: 'token signature does not verify against any pinned TSA certificate (anchorTrust)' };
+}
+
+/**
+ * `val.checkpoint-merkle.v1` (spec §8.1) — a byte-faithful port of the RIGA producer's
+ * `computeMerkleRootFromRows`: leaf = SHA-256(UTF-8(`${sequence_number}|${chain_hash}`)), blocks in
+ * ascending sequence order, inner node = SHA-256(left32 ‖ right32), an odd final node promoted
+ * unchanged. Returns lowercase hex. Locked against the producer by the shared parity vector
+ * (`scripts/fixtures/tsa-merkle-parity-vectors.json` in rigacn; `test/fixtures/` here). Exported so
+ * `anchor.test.mjs` can assert parity. NOT the §6.4 membership Merkle (sorted content-hash set).
+ */
+export async function computeCheckpointMerkleRoot(
+  rows: Array<{ seq: number | bigint; hash: string }>,
+): Promise<string> {
+  if (rows.length === 0) throw new Error('computeCheckpointMerkleRoot: empty input');
+  let level: Uint8Array[] = await Promise.all(rows.map((r) => sha256(utf8(`${r.seq.toString()}|${r.hash}`))));
+  while (level.length > 1) {
+    const next: Uint8Array[] = [];
+    for (let i = 0; i < level.length; i += 2) {
+      if (i + 1 < level.length) next.push(await sha256(concatBytes(level[i], level[i + 1])));
+      else next.push(level[i]);
+    }
+    level = next;
+  }
+  return bytesToHex(level[0]);
+}
+
+/** Result of verifying one ANCHOR block (Merkle root + token). */
+interface AnchorBlockResult {
+  ok: boolean;
+  genTime?: string;
+  coveredRange?: { from_sequence: number; to_sequence: number };
+  reason?: string;
+}
+/** Pass 4 for a single ANCHOR block: recompute its checkpoint root over the in-band covered range,
+ *  then verify its RFC 3161 token (root binding + signature + EKU). */
+async function verifyAnchorBlock(block: ValBlock, rows: ChainRow[], spkis: string[]): Promise<AnchorBlockResult> {
+  const root = block.merkle_root;
+  const cr = block.covered_range;
+  const tst = block.tst;
+  if (!root || !tst || !cr || typeof cr.from_sequence !== 'number' || typeof cr.to_sequence !== 'number') {
+    return { ok: false, reason: 'ANCHOR block missing merkle_root / covered_range / tst' };
+  }
+  if (block.merkle_alg && block.merkle_alg !== 'val.checkpoint-merkle.v1') {
+    return { ok: false, reason: `unsupported merkle_alg '${block.merkle_alg}'` };
+  }
+  const covered = rows
+    .filter((r) => {
+      const s = Number(r.sequence_number);
+      return s >= cr.from_sequence! && s <= cr.to_sequence!;
+    })
+    .sort((a, b) => Number(a.sequence_number) - Number(b.sequence_number));
+  if (covered.length === 0) {
+    return { ok: false, reason: `no in-band blocks in covered_range [${cr.from_sequence}-${cr.to_sequence}]` };
+  }
+  const recomputed = await computeCheckpointMerkleRoot(covered.map((r) => ({ seq: r.sequence_number, hash: r.chain_hash })));
+  if (recomputed !== root.toLowerCase()) {
+    return { ok: false, reason: `recomputed checkpoint root ${recomputed.slice(0, 16)}… != ANCHOR merkle_root ${root.slice(0, 16)}…` };
+  }
+  const tv = await verifyAnchorToken(tst, root, spkis);
+  if (!tv.ok) return { ok: false, reason: tv.reason };
+  return { ok: true, genTime: tv.genTime, coveredRange: { from_sequence: cr.from_sequence, to_sequence: cr.to_sequence } };
+}
+
 /** One row of a chain, in the shape required for verification. */
 export interface ChainRow {
   /**
@@ -518,9 +894,29 @@ export async function verifyDelegatorSignature(
  *  crypto verification is a future addition. */
 const QUALIFIED_ALGS = new Set(['qes', 'eidas_qes', 'eidas_eaa']);
 
+/**
+ * ADR 0063 — a resolved QES validation verdict consumed by the core (produced caller-side by
+ * `@val-protocol/qes-validator`). Structural shape only — the core does NOT depend on that package.
+ */
+export interface QesVerdict {
+  /** True iff the qualified signature validated to ETSI/eIDAS (the only field treated as the gate). */
+  qualified: boolean;
+  /** Proven natural-person identity (eIDAS minimum dataset), present iff `qualified`. */
+  signerIdentity?: {
+    given_name?: string;
+    family_name?: string;
+    date_of_birth?: string | null;
+    persistent_id?: string | null;
+    country?: string | null;
+  } | null;
+  /** Opaque reference to the full reproducible validation report. */
+  reportRef?: string | null;
+}
+
 export type TrustChainOutcome =
   | 'authority_verified_org_root_device_bound'
   | 'authority_verified_org_root_syncable'
+  | 'authority_verified_qualified'
   | 'signature_valid_only'
   | 'qualified_unverified'
   | 'invalid';
@@ -531,6 +927,7 @@ export type TrustChainOutcome =
 export async function verifyDelegationTrustChain(
   delegationSig: ValDelegatorSignature,
   orgRoot?: ValOrgRootAttestation | null,
+  qesVerdict?: QesVerdict | null,
 ): Promise<{
   signatureValid: boolean;
   linkageVerified: boolean;
@@ -540,10 +937,15 @@ export async function verifyDelegationTrustChain(
   reason: string;
 }> {
   const base = { keyBinding: null as ValKeyBinding | null, subjectAssurance: null as ValIdentityAssurance | null };
-  // Profile C (qualified) — classified, but its QTSP-anchored verification is a future
-  // trust-anchor input. Surface honestly rather than silently passing or failing.
+  // Profile C (qualified). The qualified signature's ETSI/eIDAS validation is NOT done in this zero-dep
+  // core — it is produced caller-side by @val-protocol/qes-validator and supplied as a resolved verdict
+  // (ADR 0063), exactly like Pass 4's anchorTrust. With a `qualified: true` verdict ⇒ Profile C VERIFIED;
+  // without one ⇒ `qualified_unverified` (classified, never silently upgraded).
   if (QUALIFIED_ALGS.has(delegationSig?.alg)) {
-    return { ...base, signatureValid: false, linkageVerified: false, outcome: 'qualified_unverified', reason: `qualified alg '${delegationSig.alg}' requires a QTSP trust list (not supplied) — Profile C classified, not verified` };
+    if (qesVerdict?.qualified === true) {
+      return { ...base, signatureValid: true, linkageVerified: true, outcome: 'authority_verified_qualified', reason: `qualified alg '${delegationSig.alg}' verified by qes-validator${qesVerdict.reportRef ? ` (report ${qesVerdict.reportRef})` : ''}` };
+    }
+    return { ...base, signatureValid: false, linkageVerified: false, outcome: 'qualified_unverified', reason: `qualified alg '${delegationSig.alg}' requires a QES validation verdict (qesValidation not supplied) — Profile C classified, not verified` };
   }
   const sigCheck = await verifyDelegatorSignature(delegationSig);
   if (!sigCheck.valid) {
@@ -622,6 +1024,13 @@ export interface ValBlock {
   // the hash of {document_hash, parent_assignment_hash, principal} — so it provably binds the artifact.
   document_hash?: string;
   signature?: ValDelegatorSignature;
+  // §8 ANCHOR (operational checkpoint, Pass 4): the checkpoint Merkle root, its construction id
+  // (`val.checkpoint-merkle.v1`), the inclusive covered block range, and the in-band base64 RFC 3161
+  // TimeStampToken over the root. No `parent_assignment_hash`, no principal (§5.1 exempt).
+  merkle_root?: string;
+  merkle_alg?: string;
+  covered_range?: { from_sequence?: number; to_sequence?: number };
+  tst?: string;
 }
 
 export interface ValVerificationResult {
@@ -673,6 +1082,19 @@ export interface ValVerificationResult {
    */
   bytesBinding: 'bound' | 'mismatch' | 'not_evaluated';
   firstBytesBindingViolation: { sequenceNumber: string; reason: string } | null;
+  /**
+   * Pass 4 (external anchor, §8): an ANCHOR block's checkpoint Merkle root re-derived over its
+   * in-band covered range AND its RFC 3161 token verified against `options.anchorTrust`. OPT-IN and
+   * additive: `'verified'` = ≥1 ANCHOR present, a trust anchor was supplied, and every ANCHOR's root
+   * + token verified; `'mismatch'` = an ANCHOR was present and a trust anchor supplied but one failed
+   * (root mismatch, broken messageImprint binding, or invalid signature) — sticky; `'not_evaluated'`
+   * = no ANCHOR block, or no `anchorTrust` supplied. Absence NEVER fails the verdict. Temporal
+   * existence only — `anchors[].genTime` is the TSA-attested time; no time-policy is evaluated.
+   */
+  anchorBinding: 'verified' | 'mismatch' | 'not_evaluated';
+  firstAnchorViolation: { sequenceNumber: string; reason: string } | null;
+  /** Per verified ANCHOR: the attested `genTime` (ISO 8601) and the covered block range. */
+  anchors: Array<{ sequenceNumber: string; genTime: string; covered_range: { from_sequence: number; to_sequence: number } }>;
   /**
    * Pre-carrier (v1) ASSIGNMENT bodies lacking delegator_authority — tolerated (chain
    * bytes are immutable) but counted, so a report states exactly how much of the chain
@@ -816,6 +1238,23 @@ export async function verifyValChain(
      * (the MUTATION's `resource.resource_id`).
      */
     bytesDisclosures?: Array<{ resourceId: string; documentBytesBase64: string; nonceHex: string }>;
+    /**
+     * §8 Pass 4 — the resolved anchor trust anchor: base64 SPKIs (SubjectPublicKeyInfo) of acceptable
+     * RFC 3161 TSA signing certificates. A pinned set in Phase 1 (any-TSA); in eIDAS deployments the
+     * caller resolves the QTSP cert from the EU Trusted List (LOTL) and supplies it here already-
+     * resolved (identical shape — the verifier never fetches a trust list). Absent ⇒ Pass 4 reports
+     * `not_evaluated`.
+     */
+    anchorTrust?: { tsaCertSpkis: string[] };
+    /**
+     * ADR 0063 Profile C — resolved eIDAS QES validation verdicts, produced caller-side by
+     * `@val-protocol/qes-validator` (which carries the heavy ETSI deps; this zero-dep core only consumes
+     * the verdict, exactly like `anchorTrust`). A qualified delegation (`qes`/`eidas_qes`/`eidas_eaa`)
+     * with a matching `qualified: true` report verifies Profile C; absent ⇒ `qualified_unverified`
+     * (classified, never silently upgraded). v0: chain-level (first qualified report applies to the
+     * qualified root delegation — refine to per-signature matching in the full build).
+     */
+    qesValidation?: { reports: QesVerdict[] };
   },
 ): Promise<ValVerificationResult> {
   const result: ValVerificationResult = {
@@ -835,6 +1274,9 @@ export async function verifyValChain(
     firstSignatureViolation: null,
     bytesBinding: 'not_evaluated',
     firstBytesBindingViolation: null,
+    anchorBinding: 'not_evaluated',
+    firstAnchorViolation: null,
+    anchors: [],
     legacyPreAuthorityAssignmentCount: 0,
     nonValBlockCount: 0,
   };
@@ -1139,11 +1581,28 @@ export async function verifyValChain(
         const dsig = block.human_attestation?.delegator_authority?.signature;
         if (dsig) {
           const oroot = block.human_attestation?.delegator_authority?.org_root ?? null;
-          const tc = await verifyDelegationTrustChain(dsig, oroot);
-          if (tc.outcome === 'qualified_unverified') {
-            // Profile C: CLASSIFIED (declared). Its crypto verification needs a QTSP trust
-            // list — a future trust-anchor input, never a silent default. Conformance
-            // reflects C; the signature pass is left unchanged (not green, not red).
+          // ADR 0063 — supply a resolved QES verdict for qualified delegations (v0: first qualified
+          // report applies to the qualified root delegation). Absent ⇒ classified-not-verified default.
+          const qesVerdict =
+            QUALIFIED_ALGS.has(dsig.alg) && options?.qesValidation?.reports
+              ? (options.qesValidation.reports.find((r) => r.qualified === true) ?? null)
+              : null;
+          const tc = await verifyDelegationTrustChain(dsig, oroot, qesVerdict);
+          if (tc.outcome === 'authority_verified_qualified') {
+            // Profile C VERIFIED — a qes-validator verdict proved the qualified signature (eIDAS QES).
+            // Earns conformance C + signature green, and surfaces the proven natural-person identity as
+            // the root subject (source 'qes'), verbatim — never rounded up.
+            profiles.add('C');
+            if (result.signature === 'none') result.signature = 'green';
+            const id = qesVerdict?.signerIdentity;
+            const claim = id ? [id.given_name, id.family_name].filter(Boolean).join(' ').trim() : '';
+            if (claim && !result.rootSubject) {
+              result.rootSubject = { subject_claim: claim, source: 'qes' };
+            }
+          } else if (tc.outcome === 'qualified_unverified') {
+            // Profile C: CLASSIFIED (declared). Its crypto verification needs a QES validation verdict
+            // (qesValidation) — never a silent default. Conformance reflects C; the signature pass is
+            // left unchanged (not green, not red).
             profiles.add('C');
           } else if (tc.signatureValid && tc.linkageVerified) {
             // Only a VERIFIED + org-root-LINKED signature earns conformance B.
@@ -1181,6 +1640,28 @@ export async function verifyValChain(
         const ia = block.human_attestation.identity_assurance;
         if (!result.rootSubject && ia?.subject_claim) {
           result.rootSubject = { subject_claim: ia.subject_claim, source: ia.source ?? 'self_asserted' };
+        }
+      }
+    }
+  }
+
+  // ── Pass 4 — external anchor (§8). Opt-in: only when a trust anchor is supplied. Each ANCHOR
+  //    block (skipped by the main loop) is verified independently against its own covered range +
+  //    RFC 3161 token. `verified` requires every present ANCHOR to pass; a single failure is sticky
+  //    `mismatch`. Absent trust anchor or no ANCHOR ⇒ `not_evaluated` (never fails the verdict). ──
+  const anchorSpkis = options?.anchorTrust?.tsaCertSpkis ?? null;
+  if (anchorSpkis && anchorSpkis.length > 0) {
+    for (const { row, block } of blocks) {
+      if (!block || block.block_type !== 'ANCHOR') continue;
+      const seqStr = row.sequence_number.toString();
+      const v = await verifyAnchorBlock(block, rows, anchorSpkis);
+      if (v.ok) {
+        if (result.anchorBinding === 'not_evaluated') result.anchorBinding = 'verified';
+        result.anchors.push({ sequenceNumber: seqStr, genTime: v.genTime!, covered_range: v.coveredRange! });
+      } else {
+        result.anchorBinding = 'mismatch'; // sticky — a later valid ANCHOR does not clear it
+        if (!result.firstAnchorViolation) {
+          result.firstAnchorViolation = { sequenceNumber: seqStr, reason: v.reason ?? 'anchor verification failed' };
         }
       }
     }

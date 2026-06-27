@@ -20,9 +20,9 @@ VAL defines seven block types. Six correspond to the protocol's six **action cla
 | CONSENT | `sign` | Signature, agreement acceptance, NDA, disclosure attestation. | verifier implemented; producer reserved |
 | COMMUNICATION | `send` | Send, share-link create/access, Q&A post/answer, outbound message. | verifier implemented; producer reserved |
 | SETTLEMENT | `settle` | Payment, refund, subscription change, invoice. | specified; not yet implemented |
-| ANCHOR | — | External timestamp over a Merkle root of preceding blocks (§8). | specified; not yet implemented |
+| ANCHOR | — | External RFC 3161 timestamp over a Merkle root of a contiguous range of preceding blocks (§8). | verifier-implemented (Pass 4, 0.8.0); operator-emitted |
 
-"Shipped" means the reference producer emits the block and the reference verifier re-derives its properties end-to-end. Beyond the three shipped types, the reference verifier carries **dedicated passes for CONSENT** (per-action WebAuthn/ECDSA signature check) and **COMMUNICATION** (container-owner re-derivation): these are verified if present but are not emitted by the reference producer ("producer reserved"). **SETTLEMENT** is recognized only for generic lineage/scope (no settlement-specific check) and **ANCHOR** is skipped entirely (§7.4). A conforming implementation MAY emit any reserved type ahead of this reference. **The block types that ship end-to-end (reference producer + verifier) today are ASSIGNMENT, ACCESS, and MUTATION; CONSENT and COMMUNICATION are verifier-complete.**
+"Shipped" means the reference producer emits the block and the reference verifier re-derives its properties end-to-end. Beyond the three shipped types, the reference verifier carries **dedicated passes for CONSENT** (per-action WebAuthn/ECDSA signature check) and **COMMUNICATION** (container-owner re-derivation): these are verified if present but are not emitted by the reference producer ("producer reserved"). **SETTLEMENT** is recognized only for generic lineage/scope (no settlement-specific check) and **ANCHOR** is verified by a dedicated external-anchor pass (Pass 4, §7.4) when present. A conforming implementation MAY emit any reserved type ahead of this reference. **The block types that ship end-to-end (reference producer + verifier) today are ASSIGNMENT, ACCESS, and MUTATION; CONSENT and COMMUNICATION are verifier-complete.**
 
 Operators MAY define private block types; a verifier MUST ignore any `block_type` it does not recognize rather than fail.
 
@@ -108,6 +108,20 @@ where `nonce` is a 32-byte producer-side secret **never carried on the chain or 
 
 Operators MAY carry additional metadata in the canonical object; the verifier neither requires nor evaluates such fields.
 
-**CONSENT / COMMUNICATION / SETTLEMENT / ANCHOR** — specified as action classes (§4.2) but not emitted by the v0.1 reference producer; the canonical content shape of each is reserved to the capability that introduces it. A conforming implementation that emits them MUST carry `v`, `block_type`, and — for the action classes — `parent_assignment_hash`.
+**ANCHOR** — an operational checkpoint (§8), not an action class. It carries **no `parent_assignment_hash`** (§5.1 exempts ANCHOR from lineage) and **no principal** (it is operator/system-emitted by a scheduler, not a delegated action). It binds an RFC 3161 TimeStampToken to a Merkle root over a contiguous range of preceding blocks **in its own `chain_scope`** (in-band).
+```json
+{
+  "v": 1,
+  "block_type": "ANCHOR",
+  "merkle_root": "<hex>",
+  "merkle_alg": "val.checkpoint-merkle.v1",
+  "covered_range": { "from_sequence": 1, "to_sequence": 4096 },
+  "tst": "<base64 RFC 3161 TimeStampToken>",
+  "timestamp_local": 1700000000000
+}
+```
+`merkle_root` is the 64-char lowercase-hex SHA-256 Merkle root over the blocks `covered_range.from_sequence … to_sequence` (**inclusive**) of the same chain, computed by `merkle_alg` (§8.1; `val.checkpoint-merkle.v1` = leaf `SHA-256("<sequence_number>|<chain_hash>")`, sequence order, odd final node promoted unchanged). `tst` is the base64 RFC 3161 TimeStampToken **carried in-band** — it is committed into this block's `chain_hash` (§4.3) and therefore travels with every export; it is the authoritative artifact for Pass-4 verification. The token's `messageImprint.hashedMessage` is the `merkle_root` itself (the root **is** the timestamped digest — it is not re-hashed; §8.1). `timestamp_local` is the producer's emit instant in Unix milliseconds (the VAL §4 local stamp) and is **distinct from** the TSA's attested `genTime`, which lives inside the TST and is the only trusted time (§8.4). A verifier that does not implement Pass 4 ignores the ANCHOR block per the §4.2 unknown-type rule.
+
+**CONSENT / COMMUNICATION / SETTLEMENT** — specified as action classes (§4.2) but not emitted by the v0.1 reference producer; the canonical content shape of each is reserved to the capability that introduces it. A conforming implementation that emits them MUST carry `v`, `block_type`, and `parent_assignment_hash`.
 
 ---
