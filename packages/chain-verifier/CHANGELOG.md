@@ -39,9 +39,11 @@
 - **Opt-in and additive:** no `anchorTrust`, or a chain with no ANCHOR block ⇒ `not_evaluated`, never a
   failure; the core verdict (integrity / lineage / scope / grounding / authority / signature / bytes-
   binding) is unchanged. Still **zero runtime dependencies** (Web Crypto only).
-- **Tests:** full suite **51/51 green** — verified against **real tokens from three independent TSAs**,
+- **Tests:** full suite **54/54 green** — verified against **real tokens from three independent TSAs**,
   including a genuinely **eIDAS-qualified** one: DigiCert (RSA-SHA256), FreeTSA (ECDSA-P521-SHA512), and
-  **Sectigo Qualified** (RSA-SHA256; EU Trusted List, ETSI EN 319 422, Policy OID `0.4.0.2023.1.1`) — plus
+  **Sectigo Qualified** (TSU signs RSA-4096 / SHA-384; EU Trusted List, listed `TSA/QTST` `granted`;
+  ETSI EN 319 422; policy OID `0.4.0.2023.1.1` is the EN 319 421 BTSP baseline — standards-conformance,
+  **not** a qualification signal: qualification is established by the LOTL, not the OID) — plus
   the Merkle parity vector and tamper cases (wrong cert, tampered range, mismatched messageImprint,
   corrupted token). The qualified token verifies through the identical Pass 4 (the verifier proves
   `anchorBinding`, never "qualified" — that label is operator-asserted). Spec: VAL §8 + §7.2 Pass 4.

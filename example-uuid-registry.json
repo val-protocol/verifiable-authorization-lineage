@@ -11,6 +11,7 @@
   ],
   "ids": {
     "1f0ee1e2-6f2c-4f95-955b-5aa5270ce05c": "scopeKey example — packages/chain-verifier/README.md",
-    "e33143e3-7a34-42b6-98f6-e2576d988de4": "dataroom-id example — packages/chain-verifier-cli/README.md"
+    "e33143e3-7a34-42b6-98f6-e2576d988de4": "dataroom-id example — packages/chain-verifier-cli/README.md",
+    "11111111-2222-3333-4444-555555555555": "synthetic anchor-fixture scope_key (test/fixtures/anchor-fixtures.json) — hand-typed placeholder, references no real system. EXCEPTION to the mint-a-random-UUID rule: the fixture's real RFC 3161 TST sealed the merkleRoot derived from this scope_key, so it cannot be swapped for a random UUID without re-minting real TSA tokens. Zero leak risk (not a real id)."
   }
 }
