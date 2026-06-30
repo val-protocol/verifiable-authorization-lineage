@@ -2,7 +2,7 @@
   "name": "@val-protocol/qes-validator",
   "version": "0.0.0",
   "private": true,
-  "description": "Optional eIDAS QES (Qualified Electronic Signature) validator for VAL Profile C. Validates a qualified signature to ETSI standards (X.509-to-LOTL, QcStatements, OCSP/CRL, JAdES, LTV) and emits a reproducible QesValidationReport that the zero-dep @val-protocol/chain-verifier consumes. SCAFFOLD — implementation demand-gated (ADR 0063, S1: wrap EU DSS). NOT published.",
+  "description": "Caller-side, no-DSS, pure-JS eIDAS QES (Qualified Electronic Signature) validator for VAL Profile C. Validates a detached JAdES delegator signature (JWS parse + x5c signature-value + cert-path + QcStatements + Trusted-List CA/QC-for-eSignatures at signing time) and emits a reproducible QesValidationReport that the zero-dep @val-protocol/chain-verifier consumes. Documented ETSI subset: TS 119 102-1 (steps 2-3) + TS 119 615 (qualification). Per-cert OCSP/CRL + AdES-LTA are out of scope (DSS's job). NOT published.",
   "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/esm/index.js",
@@ -19,7 +19,11 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "node --test"
+    "pretest": "bash test/fixtures/gen.sh && npm run build",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@val-protocol/anchor-lotl-resolver": "^0.1.0"
   },
   "keywords": [
     "eidas",

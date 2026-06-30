@@ -911,6 +911,11 @@ export interface QesVerdict {
   } | null;
   /** Opaque reference to the full reproducible validation report. */
   reportRef?: string | null;
+  /** Per-signature key (ADR 0063 item 5) = sha256-hex of the delegation `signature.signature` bytes,
+   *  as `@val-protocol/qes-validator` emits. When present, the verifier matches THIS report to THIS
+   *  signature (not "first qualified report"), so distinct qualified delegations cannot borrow each
+   *  other's verdict on a multi-grant / mixed-profile chain. Absent ⇒ legacy unkeyed (single-grant). */
+  signatureRef?: string | null;
 }
 
 export type TrustChainOutcome =
@@ -1251,8 +1256,11 @@ export async function verifyValChain(
      * `@val-protocol/qes-validator` (which carries the heavy ETSI deps; this zero-dep core only consumes
      * the verdict, exactly like `anchorTrust`). A qualified delegation (`qes`/`eidas_qes`/`eidas_eaa`)
      * with a matching `qualified: true` report verifies Profile C; absent ⇒ `qualified_unverified`
-     * (classified, never silently upgraded). v0: chain-level (first qualified report applies to the
-     * qualified root delegation — refine to per-signature matching in the full build).
+     * (classified, never silently upgraded). Per-signature matching (ADR 0063 item 5): when reports
+     * carry `signatureRef` (sha256-hex of the delegation signature bytes, as `qes-validator` emits),
+     * each delegation matches ONLY its own report — distinct qualified delegations cannot borrow each
+     * other's verdict. Legacy unkeyed reports (no `signatureRef`) fall back to first-qualified for
+     * single-grant back-compat.
      */
     qesValidation?: { reports: QesVerdict[] };
   },
@@ -1581,12 +1589,24 @@ export async function verifyValChain(
         const dsig = block.human_attestation?.delegator_authority?.signature;
         if (dsig) {
           const oroot = block.human_attestation?.delegator_authority?.org_root ?? null;
-          // ADR 0063 — supply a resolved QES verdict for qualified delegations (v0: first qualified
-          // report applies to the qualified root delegation). Absent ⇒ classified-not-verified default.
-          const qesVerdict =
-            QUALIFIED_ALGS.has(dsig.alg) && options?.qesValidation?.reports
-              ? (options.qesValidation.reports.find((r) => r.qualified === true) ?? null)
-              : null;
+          // ADR 0063 item 5 — supply a resolved QES verdict for qualified delegations by PER-SIGNATURE
+          // matching: a report whose `signatureRef` == sha256-hex(this signature) is THIS signature's
+          // verdict (qualified or not). When reports are keyed but none matches ⇒ no verdict (never
+          // borrow another signature's — the old "first qualified" bug). Legacy unkeyed reports fall
+          // back to first-qualified (single-grant back-compat). Absent ⇒ classified-not-verified default.
+          let qesVerdict: QesVerdict | null = null;
+          const reports = options?.qesValidation?.reports;
+          if (QUALIFIED_ALGS.has(dsig.alg) && reports && reports.length) {
+            const thisRef = bytesToHex(await sha256(new TextEncoder().encode(dsig.signature)));
+            const keyed = reports.find((r) => r.signatureRef === thisRef);
+            if (keyed) {
+              qesVerdict = keyed; // exact per-signature verdict — authoritative
+            } else if (reports.some((r) => r.signatureRef != null)) {
+              qesVerdict = null; // keyed reports, none for THIS signature ⇒ qualified_unverified
+            } else {
+              qesVerdict = reports.find((r) => r.qualified === true) ?? null; // legacy unkeyed fallback
+            }
+          }
           const tc = await verifyDelegationTrustChain(dsig, oroot, qesVerdict);
           if (tc.outcome === 'authority_verified_qualified') {
             // Profile C VERIFIED — a qes-validator verdict proved the qualified signature (eIDAS QES).

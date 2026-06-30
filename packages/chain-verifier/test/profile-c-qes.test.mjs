@@ -68,3 +68,34 @@ test('Profile C with qualified:false verdict => still classified, NOT upgraded',
   assert.equal(r.conformanceProfile, 'C');
   assert.notEqual(r.signature, 'green'); // a non-qualified verdict never verifies
 });
+
+// ── ADR 0063 item 5: PER-SIGNATURE matching (signatureRef) — the anti-borrow proof ──────────────────
+import { createHash } from 'node:crypto';
+const refOf = (sig) => createHash('sha256').update(sig, 'utf8').digest('hex'); // == qes-validator's signatureRef
+
+test('item 5: keyed report matching THIS signature => green, and a decoy qualified report is NOT borrowed', async () => {
+  const thisRef = refOf('placeholder'); // the assignment's signature blob
+  const r = await verifyValChain(await mkRow(makeQualifiedAssignment()), {
+    qesValidation: {
+      reports: [
+        { qualified: true, signatureRef: 'deadbeef'.repeat(8), reportRef: 'decoy-other-signature' }, // different signature
+        { qualified: true, signatureRef: thisRef, signerIdentity: { given_name: 'Real', family_name: 'Signer', country: 'FR' }, reportRef: 'matches-this' },
+      ],
+    },
+  });
+  assert.equal(r.conformanceProfile, 'C');
+  assert.equal(r.signature, 'green'); // verified by ITS OWN report
+  assert.deepEqual(r.rootSubject, { subject_claim: 'Real Signer', source: 'qes' });
+});
+
+test('item 5: keyed reports present but NONE matches THIS signature => NOT green (no borrowing the old "first qualified")', async () => {
+  const r = await verifyValChain(await mkRow(makeQualifiedAssignment()), {
+    qesValidation: {
+      reports: [
+        { qualified: true, signatureRef: 'deadbeef'.repeat(8), reportRef: 'a-different-signatures-verdict' },
+      ],
+    },
+  });
+  assert.equal(r.conformanceProfile, 'C'); // still classified C by alg
+  assert.notEqual(r.signature, 'green'); // but NOT verified — the decoy verdict belongs to another signature
+});

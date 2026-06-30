@@ -1,0 +1,6 @@
+{
+  "alg": "RS256",
+  "qualifiedAlg": "eidas_qes",
+  "x5cLen": 3,
+  "signedAt": "2026-06-30T06:24:53.496Z"
+}
