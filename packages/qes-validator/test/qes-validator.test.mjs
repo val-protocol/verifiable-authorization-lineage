@@ -39,7 +39,7 @@ function makeJades({ leaf, key, alg = 'ES256', tamper = false, canonical = CANON
   const leafDer = derB64(read(leaf));
   const protectedHeader = {
     alg,
-    x5c: [leafDer],
+    x5c: [leafDer, ROOT_DER_B64], // full chain in x5c (real JAdES does this); issuer = the test root
     sigT: SIGNING_ISO,
     sigD: {
       mId: 'http://uri.etsi.org/19182/ObjectIdByURIHash',
@@ -65,7 +65,7 @@ function signFor(alg, input, key) {
 }
 // attached JAdES: payload = canonical (base64url), no sigD → exercises bindsToCanonical attached branch
 function makeJadesAttached({ leaf, key, alg = 'ES256', canonical = CANONICAL }) {
-  const protectedHeader = { alg, x5c: [derB64(read(leaf))], sigT: SIGNING_ISO };
+  const protectedHeader = { alg, x5c: [derB64(read(leaf)), ROOT_DER_B64], sigT: SIGNING_ISO };
   const protB64 = b64url(Buffer.from(JSON.stringify(protectedHeader)));
   const payloadB64 = b64url(Buffer.from(canonical, 'utf8'));
   const signingInput = Buffer.from(`${protB64}.${payloadB64}`, 'ascii');
@@ -105,7 +105,7 @@ test('qualified leaf + CA/QC-granted TSL → status=qualified (the positive)', a
     signedCanonical: CANONICAL,
     signature: sigOf(jades),
     validationTime: SIGNING_ISO,
-    trust: { tslXml: TSL_CAQC_GRANTED, trustAnchorsDer: anchors },
+    trust: { tslXml: TSL_CAQC_GRANTED, intermediateHintsDer: anchors },
   });
   console.log('  [qualified]', r.status, '|', r.indication, '|', r.reason);
   assert.equal(r.qualified, true);
@@ -125,7 +125,7 @@ test('non-qualified leaf (no QcStatements) → conclusive not_qualified [SSL.com
     signedCanonical: CANONICAL,
     signature: sigOf(jades),
     validationTime: SIGNING_ISO,
-    trust: { tslXml: TSL_CAQC_GRANTED, trustAnchorsDer: anchors },
+    trust: { tslXml: TSL_CAQC_GRANTED, intermediateHintsDer: anchors },
   });
   console.log('  [plain]', r.status, '|', r.subIndication, '|', r.reason);
   assert.equal(r.qualified, false);
@@ -136,7 +136,7 @@ test('non-qualified leaf (no QcStatements) → conclusive not_qualified [SSL.com
 // ── NEGATIVES ─────────────────────────────────────────────────────────────────────────────────────────
 test('mangled signature value → not_qualified SIG_CRYPTO_FAILURE', async () => {
   const jades = makeJades({ leaf: 'qualified.cert.pem', key: 'qualified.key.pem', tamper: true });
-  const r = await validateQes({ signedCanonical: CANONICAL, signature: sigOf(jades), validationTime: SIGNING_ISO, trust: { tslXml: TSL_CAQC_GRANTED, trustAnchorsDer: anchors } });
+  const r = await validateQes({ signedCanonical: CANONICAL, signature: sigOf(jades), validationTime: SIGNING_ISO, trust: { tslXml: TSL_CAQC_GRANTED, intermediateHintsDer: anchors } });
   console.log('  [tamper]', r.status, '|', r.subIndication);
   assert.equal(r.status, 'not_qualified');
   assert.equal(r.subIndication, 'SIG_CRYPTO_FAILURE');
@@ -144,7 +144,7 @@ test('mangled signature value → not_qualified SIG_CRYPTO_FAILURE', async () =>
 
 test('TSA-only issuer → not_qualified (refinement 3: TSA hit must NOT count as qualified-eSig)', async () => {
   const jades = makeJades({ leaf: 'qualified.cert.pem', key: 'qualified.key.pem' });
-  const r = await validateQes({ signedCanonical: CANONICAL, signature: sigOf(jades), validationTime: SIGNING_ISO, trust: { tslXml: TSL_TSA_ONLY, trustAnchorsDer: anchors } });
+  const r = await validateQes({ signedCanonical: CANONICAL, signature: sigOf(jades), validationTime: SIGNING_ISO, trust: { tslXml: TSL_TSA_ONLY, intermediateHintsDer: anchors } });
   console.log('  [tsa-only]', r.status, '|', r.reason);
   assert.equal(r.qualified, false);
   assert.equal(r.status, 'not_qualified');
@@ -153,21 +153,21 @@ test('TSA-only issuer → not_qualified (refinement 3: TSA hit must NOT count as
 
 test('service withdrawn before signing time → not_qualified', async () => {
   const jades = makeJades({ leaf: 'qualified.cert.pem', key: 'qualified.key.pem' });
-  const r = await validateQes({ signedCanonical: CANONICAL, signature: sigOf(jades), validationTime: SIGNING_ISO, trust: { tslXml: TSL_WITHDRAWN, trustAnchorsDer: anchors } });
+  const r = await validateQes({ signedCanonical: CANONICAL, signature: sigOf(jades), validationTime: SIGNING_ISO, trust: { tslXml: TSL_WITHDRAWN, intermediateHintsDer: anchors } });
   console.log('  [withdrawn]', r.status, '|', r.reason);
   assert.equal(r.status, 'not_qualified');
 });
 
 test('service granted only AFTER signing time → not_qualified', async () => {
   const jades = makeJades({ leaf: 'qualified.cert.pem', key: 'qualified.key.pem' });
-  const r = await validateQes({ signedCanonical: CANONICAL, signature: sigOf(jades), validationTime: SIGNING_ISO, trust: { tslXml: TSL_GRANTED_LATE, trustAnchorsDer: anchors } });
+  const r = await validateQes({ signedCanonical: CANONICAL, signature: sigOf(jades), validationTime: SIGNING_ISO, trust: { tslXml: TSL_GRANTED_LATE, intermediateHintsDer: anchors } });
   console.log('  [granted-late]', r.status, '|', r.reason);
   assert.equal(r.status, 'not_qualified');
 });
 
 test('CA/QC but not ForeSignatures (seals/web-auth only) → not_qualified', async () => {
   const jades = makeJades({ leaf: 'qualified.cert.pem', key: 'qualified.key.pem' });
-  const r = await validateQes({ signedCanonical: CANONICAL, signature: sigOf(jades), validationTime: SIGNING_ISO, trust: { tslXml: TSL_SEALS_ONLY, trustAnchorsDer: anchors } });
+  const r = await validateQes({ signedCanonical: CANONICAL, signature: sigOf(jades), validationTime: SIGNING_ISO, trust: { tslXml: TSL_SEALS_ONLY, intermediateHintsDer: anchors } });
   console.log('  [no-foresign]', r.status, '|', r.reason);
   assert.equal(r.status, 'not_qualified');
 });
@@ -178,7 +178,7 @@ test('LOTL unreachable → indeterminate (refinement 2: distinct from conclusive
     signedCanonical: CANONICAL,
     signature: sigOf(jades),
     validationTime: SIGNING_ISO,
-    trust: { fetchLive: true, fetchImpl: async () => { throw new Error('network down'); }, trustAnchorsDer: anchors },
+    trust: { fetchLive: true, fetchImpl: async () => { throw new Error('network down'); }, intermediateHintsDer: anchors },
   });
   console.log('  [lotl-down]', r.status, '|', r.reason);
   assert.equal(r.status, 'indeterminate');
@@ -187,22 +187,25 @@ test('LOTL unreachable → indeterminate (refinement 2: distinct from conclusive
 
 test('CAdES/PAdES (non-JWS) input → indeterminate with reason', async () => {
   const cades = Buffer.from('-----BEGIN CMS----- not a JWS, a CAdES blob -----END CMS-----').toString('base64');
-  const r = await validateQes({ signedCanonical: CANONICAL, signature: sigOf(cades), validationTime: SIGNING_ISO, trust: { tslXml: TSL_CAQC_GRANTED, trustAnchorsDer: anchors } });
+  const r = await validateQes({ signedCanonical: CANONICAL, signature: sigOf(cades), validationTime: SIGNING_ISO, trust: { tslXml: TSL_CAQC_GRANTED, intermediateHintsDer: anchors } });
   console.log('  [cades]', r.status, '|', r.reason);
   assert.equal(r.status, 'indeterminate');
   assert.match(r.reason, /JAdES|CAdES|parse/);
 });
 
-test('no trust anchor → indeterminate (cannot conclude), not a false negative', async () => {
+// FIXED (was 'no trust anchor → indeterminate'): the old test injected an empty anchor list and expected
+// indeterminate — it encoded the bug that the trust anchor is caller-supplied. Under the TL-only model the
+// anchor is never injected; the legitimate "cannot conclude" cause is **no Trusted List available**.
+test('no Trusted List supplied (no tslXml / no fetchLive) → indeterminate (cannot conclude)', async () => {
   const jades = makeJades({ leaf: 'qualified.cert.pem', key: 'qualified.key.pem' });
-  const r = await validateQes({ signedCanonical: CANONICAL, signature: sigOf(jades), validationTime: SIGNING_ISO, trust: { tslXml: TSL_CAQC_GRANTED, trustAnchorsDer: [] } });
-  console.log('  [no-anchor]', r.status, '|', r.reason);
+  const r = await validateQes({ signedCanonical: CANONICAL, signature: sigOf(jades), validationTime: SIGNING_ISO, trust: {} });
+  console.log('  [no-TL]', r.status, '|', r.reason);
   assert.equal(r.status, 'indeterminate');
 });
 
 test('signature does not bind the supplied canonical bytes → not_qualified HASH_FAILURE', async () => {
   const jades = makeJades({ leaf: 'qualified.cert.pem', key: 'qualified.key.pem' });
-  const r = await validateQes({ signedCanonical: '{"different":"bytes"}', signature: sigOf(jades), validationTime: SIGNING_ISO, trust: { tslXml: TSL_CAQC_GRANTED, trustAnchorsDer: anchors } });
+  const r = await validateQes({ signedCanonical: '{"different":"bytes"}', signature: sigOf(jades), validationTime: SIGNING_ISO, trust: { tslXml: TSL_CAQC_GRANTED, intermediateHintsDer: anchors } });
   console.log('  [wrong-canonical]', r.status, '|', r.subIndication);
   assert.equal(r.status, 'not_qualified');
   assert.equal(r.subIndication, 'HASH_FAILURE');
@@ -216,7 +219,7 @@ test('matchGrantedCaQc unit: TSA service type is never a qualified-eSig hit', ()
 
 // ── deferred-internals coverage (audit 2026-06-30) ──────────────────────────────────────────────────
 const runValid = (jades, vt = SIGNING_ISO, canonical = CANONICAL) =>
-  validateQes({ signedCanonical: canonical, signature: sigOf(jades), validationTime: vt, trust: { tslXml: TSL_CAQC_GRANTED, trustAnchorsDer: anchors } });
+  validateQes({ signedCanonical: canonical, signature: sigOf(jades), validationTime: vt, trust: { tslXml: TSL_CAQC_GRANTED, intermediateHintsDer: anchors } });
 
 test('cert validity: signing time BEFORE notBefore → not_qualified NOT_YET_VALID', async () => {
   const jades = makeJades({ leaf: 'qualified.cert.pem', key: 'qualified.key.pem' });

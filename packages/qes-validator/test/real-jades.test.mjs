@@ -29,7 +29,7 @@ test('REAL SSL.com JAdES: parse + signature-value verify + x5c succeed on genuin
     signedCanonical: canonical,
     signature: { alg: 'eidas_qes', signature: jadesB64 },
     validationTime: header.sigT,
-    trust: { trustAnchorsDer: [anchor] }, // no EU TSL supplied → CA/QC stage cannot conclude
+    trust: { intermediateHintsDer: [anchor] }, // no EU TSL supplied → CA/QC stage cannot conclude
   });
   console.log('  [REAL ssl.com]', r.status, '|', r.indication, '|', r.subIndication, '|', r.reason);
 
@@ -63,7 +63,7 @@ test('REAL SSL.com JAdES, TAMPERED signature → SIG_CRYPTO_FAILURE (verify disc
     signedCanonical: canonical,
     signature: { alg: 'eidas_qes', signature: tamperedJadesB64 },
     validationTime: header.sigT,
-    trust: { trustAnchorsDer: [anchor] },
+    trust: { intermediateHintsDer: [anchor] },
   });
   console.log('  [REAL tampered]', r.status, '|', r.subIndication, '|', r.reason);
   assert.equal(r.status, 'not_qualified');

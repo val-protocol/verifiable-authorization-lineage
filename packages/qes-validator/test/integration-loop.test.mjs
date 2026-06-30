@@ -44,7 +44,7 @@ test('LEG 4: real qes-validator report flows into verifyValChain; signatureRef a
   const rows = await chainOf(assignmentBlock(jades), 's-leg4');
 
   // (a) the REAL report from qes-validator on real bytes — its actual signatureRef + honest verdict.
-  const realReport = await validateQes({ signedCanonical: canonical, signature: { alg: 'eidas_qes', signature: jades }, validationTime: new Date(iat * 1000).toISOString(), trust: { trustAnchorsDer: [anchor] } });
+  const realReport = await validateQes({ signedCanonical: canonical, signature: { alg: 'eidas_qes', signature: jades }, validationTime: new Date(iat * 1000).toISOString(), trust: { intermediateHintsDer: [anchor] } });
   console.log('  real report: status=', realReport.status, 'signatureRef=', realReport.signatureRef.slice(0, 16) + '…');
   const realOutcome = await verifyValChain(rows, { qesValidation: { reports: [realReport] } });
   assert.equal(realOutcome.conformanceProfile, 'C');
@@ -65,8 +65,8 @@ test('LEG 4: real qes-validator report flows into verifyValChain; signatureRef a
 test('LEG 5: two DISTINCT real signatures — each block matches only its own ref, neither borrows', { skip }, async () => {
   const dss = readFileSync(DSS, 'utf8').trim();
   const js = readFileSync(JS, 'utf8').trim();
-  const refA = (await validateQes({ signedCanonical: readFileSync(join(FX, 'dss-emitted.canonical.json'), 'utf8'), signature: { alg: 'eidas_qes', signature: dss }, trust: { trustAnchorsDer: [anchorOf(dss).anchor] } })).signatureRef;
-  const refB = (await validateQes({ signedCanonical: readFileSync(join(FX, 'sslcom-real.canonical.json'), 'utf8'), signature: { alg: 'eidas_qes', signature: js }, trust: { trustAnchorsDer: [anchorOf(js).anchor] } })).signatureRef;
+  const refA = (await validateQes({ signedCanonical: readFileSync(join(FX, 'dss-emitted.canonical.json'), 'utf8'), signature: { alg: 'eidas_qes', signature: dss }, trust: { intermediateHintsDer: [anchorOf(dss).anchor] } })).signatureRef;
+  const refB = (await validateQes({ signedCanonical: readFileSync(join(FX, 'sslcom-real.canonical.json'), 'utf8'), signature: { alg: 'eidas_qes', signature: js }, trust: { intermediateHintsDer: [anchorOf(js).anchor] } })).signatureRef;
   console.log('  refA(dss)=', refA.slice(0, 12), '| refB(js)=', refB.slice(0, 12));
   assert.notEqual(refA, refB, 'two distinct signatures ⇒ distinct signatureRefs');
 

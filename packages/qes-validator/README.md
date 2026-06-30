@@ -35,6 +35,17 @@ qualified-eSignature hit).
 archive-timestamp LTV. Revocation here is at Trusted-List **service-status** granularity (granted /
 withdrawn at signing time), not per-cert OCSP.
 
+## Precondition: complete certificate chain (no AIA chasing)
+
+The validator anchors a signature ONLY if the full path **leaf → … → TL-listed granted CA/QC service**
+is present in the JAdES `x5c` header or in `trust.intermediateHintsDer`. It does **not** fetch missing
+issuer certificates (no AIA / `caIssuers` chasing) — that would require a network call and break the
+offline/trustless model. DSS-emitted JAdES carries the full chain in `x5c`; a leaner non-DSS QTSP that
+emits a partial `x5c` (leaf only) will return **`status: 'not_qualified'`, `subIndication: 'CHAIN_INCOMPLETE'`**
+(supply the full chain, or pass the intermediates via `intermediateHintsDer`) — **never a false `qualified`**.
+This is distinct from `ANCHOR_NOT_ON_TRUSTED_LIST` (the chain WAS complete and reached a self-issued top
+that simply isn't a granted CA/QC service — e.g. an attacker's self-signed root).
+
 ## Verdict — conclusive vs indeterminate, and per-signature keying
 
 `validateQes(input) → QesValidationReport`. `qualified: boolean` is the only field the core treats as the

@@ -28,6 +28,11 @@
  * (granted/withdrawn at signing time), NOT per-cert OCSP. Anything this subset cannot conclude returns
  * `indeterminate` — never a silent `qualified:true`.
  *
+ * PRECONDITION (cert path): the full chain leaf → … → TL-listed granted CA/QC service MUST be present in
+ * `x5c` or `trust.intermediateHintsDer`. There is NO AIA/caIssuers chasing (it would need network + break
+ * the offline model). A partial `x5c` (leaf only) ⇒ `not_qualified`/`CHAIN_INCOMPLETE` (supply the chain),
+ * NOT a false `qualified`, and distinct from `ANCHOR_NOT_ON_TRUSTED_LIST` (complete chain, top not on the TL).
+ *
  * Honesty: this validator — not the core — is the authority for "qualified". `qualified` is TRUE only on
  * a conclusive positive determination; anything else is `not_qualified` (conclusive negative) or
  * `indeterminate` (could not conclude). The core treats only `qualified` as the gate, so neither a null
@@ -43,6 +48,9 @@ const OID_QC_COMPLIANCE = '0.4.0.1862.1.1'; // esi4-qcStatement-1 (QcCompliance)
 const OID_QC_SSCD = '0.4.0.1862.1.4'; // esi4-qcStatement-4 (QcSSCD)
 const OID_QC_TYPE = '0.4.0.1862.1.6'; // esi4-qcStatement-6 (QcType)
 const OID_QC_TYPE_ESIGN = '0.4.0.1862.1.6.1'; // id-etsi-qct-esign
+const OID_BASIC_CONSTRAINTS = '2.5.29.19'; // RFC 5280 §4.2.1.9
+const OID_KEY_USAGE = '2.5.29.15'; // RFC 5280 §4.2.1.3 (keyCertSign = bit 5)
+const MAX_PATH_DEPTH = 12; // loop backstop for the certification-path walk
 
 const SVCTYPE_CA_QC = 'http://uri.etsi.org/TrstSvc/Svctype/CA/QC';
 const SVCTYPE_TSA_QTST = 'http://uri.etsi.org/TrstSvc/Svctype/TSA/QTST';
@@ -96,9 +104,22 @@ export interface QesValidationReport {
   reportRef: string | null;
   /** Which backend produced this report. */
   backend: 'offline-js';
+  /** sha256-hex of the TL-granted CA/QC cert the path anchored at (present iff `qualified`). Ruling 2:
+   *  feeding this back through `matchGrantedCaQc` MUST return granted — the walker cannot drift from the
+   *  DSS-cross-checked resolver. */
+  anchorFingerprint?: string | null;
 }
 
-/** Trust inputs for the offline determination. Provide a member-state TSL (or the live LOTL) + anchors. */
+/**
+ * Trust inputs for the offline determination.
+ *
+ * INVARIANT (ADR 0063, ruling 1): **the trust anchor is ONLY derived from the EU Trusted List.** No caller
+ * can inject a trust anchor — `x5c`-supplied and `intermediateHintsDer` certificates are untrusted path-
+ * building HINTS, validated per RFC 5280 §6 but NEVER trusted as a root. A path is anchored only when it
+ * reaches a cert the LOTL resolver (`matchGrantedCaQc`) calls a granted CA/QC-for-eSignatures service at
+ * signing time. (Replaces the prior `trustAnchorsDer`, which let the x5c top become the anchor — a forgeable
+ * trust root.)
+ */
 export interface QesTrustInput {
   /** Pre-fetched member-state Trusted List XML (ETSI TS 119 612). Offline/test path. */
   tslXml?: string;
@@ -106,9 +127,9 @@ export interface QesTrustInput {
   fetchLive?: boolean;
   lotlUrl?: string;
   fetchImpl?: typeof fetch;
-  /** DER (base64) trust-anchor certificates the cert path must terminate at. In production these are the
-   *  EU LOTL scheme operators' roots; in tests, an injected test root. Empty ⇒ path cannot be anchored. */
-  trustAnchorsDer?: string[];
+  /** Extra intermediate CA certs (base64 DER) to help BUILD the path when `x5c` omits them. HINTS ONLY —
+   *  validated as path links, never a trust source. The anchor is always the TL-matched cert. */
+  intermediateHintsDer?: string[];
 }
 
 /** Input to validate one qualified delegation signature carried on a VAL root ASSIGNMENT. */
@@ -213,24 +234,25 @@ export async function validateQes(input: QesValidationInput): Promise<QesValidat
     return notQualified(`signature-value verification failed: ${sigOk.reason}`, 'SIG_CRYPTO_FAILURE', signatureRef, adesLevel);
   }
 
-  // (3) Build + verify the certificate path leaf → issuer → trust anchor.
-  const path = buildAndVerifyPath(jws.header.x5c, input.trust.trustAnchorsDer ?? []);
-  if (!path.ok) {
-    // No anchor ⇒ cannot conclude (indeterminate); a broken signature in the chain ⇒ conclusive fail.
-    return path.broken
-      ? notQualified(`certificate path invalid: ${path.reason}`, 'NO_CERTIFICATE_CHAIN_FOUND', signatureRef, adesLevel)
-      : indeterminate(`certificate path could not be anchored to a trust anchor: ${path.reason}`, 'NO_CERTIFICATE_CHAIN_FOUND', signatureRef, adesLevel);
+  // (3) Resolve the Trusted List ONCE (the single trust source; ADR 0063 ruling 1). The same `tslXml`
+  //     and the single `signingTimeMs` feed path-validity, cert-validity, and TL-granted-at-time (ruling 3).
+  const tslRes = await resolveTslXml(input.trust, leaf);
+  if (tslRes.indeterminate) {
+    return indeterminate(`Trusted List unavailable: ${tslRes.reason}`, 'CERTIFICATE_CHAIN_GENERAL_FAILURE', signatureRef, adesLevel);
   }
 
-  // (3b) Validity period — the signing cert MUST be valid at signing time (ETSI TS 119 102-1).
-  //      Previously unchecked: an expired/not-yet-valid cert would have passed. Conclusive fail.
-  const vfrom = Date.parse(leaf.validFrom); // RFC string e.g. "Jun 30 00:00:00 2026 GMT"
-  const vto = Date.parse(leaf.validTo);
-  if (Number.isFinite(vfrom) && signingTimeMs < vfrom) {
-    return notQualified(`signing certificate not yet valid at signing time (notBefore ${new Date(vfrom).toISOString()} > ${new Date(signingTimeMs).toISOString()})`, 'NOT_YET_VALID', signatureRef, adesLevel);
-  }
-  if (Number.isFinite(vto) && signingTimeMs > vto) {
-    return notQualified(`signing certificate expired at signing time (notAfter ${new Date(vto).toISOString()} < ${new Date(signingTimeMs).toISOString()})`, 'EXPIRED', signatureRef, adesLevel);
+  // (3a) Build + RFC 5280 §6 validate the path leaf → … → anchor, where the ANCHOR is the first cert the
+  //      TL resolver calls a granted CA/QC-for-eSignatures service (NOT the x5c top — ruling 1/2).
+  const path = buildAndAnchorPath({
+    x5cB64: jws.header.x5c,
+    hintsDer: input.trust.intermediateHintsDer ?? [],
+    tslXml: tslRes.xml!,
+    signingTimeMs,
+  });
+  if (!path.ok) {
+    // broken ⇒ RFC 5280 link failure (conclusive); notAnchored ⇒ well-formed but no TL anchor (conclusive
+    // not_qualified — never "trusted because it was the top of the bundle").
+    return notQualified(`certificate path: ${path.reason}`, path.subIndication, signatureRef, adesLevel);
   }
 
   // (4a) QcStatements in the signing cert: QcCompliance AND QcType-eSign both required.
@@ -240,22 +262,11 @@ export async function validateQes(input: QesValidationInput): Promise<QesValidat
     return notQualified(`signing certificate lacks required QcStatements (${miss}) — not a qualified e-signature certificate`, 'CHAIN_CONSTRAINTS_FAILURE', signatureRef, adesLevel);
   }
 
-  // (4b) Issuer CA resolves to a granted CA/QC-for-eSignatures Trusted-List service at signing time.
-  const issuerCaFp = sha256Hex(Buffer.from(path.issuerDer, 'base64'), 'buffer');
-  const tslXml = await resolveTslXml(input.trust, leaf);
-  if (tslXml.indeterminate) {
-    return indeterminate(`Trusted List unavailable: ${tslXml.reason}`, 'CERTIFICATE_CHAIN_GENERAL_FAILURE', signatureRef, adesLevel);
-  }
-  const tl = matchGrantedCaQc(tslXml.xml!, issuerCaFp, signingTimeMs);
-  if (!tl.matched) {
-    return notQualified(`issuer CA is not a granted CA/QC-for-eSignatures service on the EU Trusted List at signing time: ${tl.reason}`, 'CHAIN_CONSTRAINTS_FAILURE', signatureRef, adesLevel);
-  }
-
-  // Conclusive POSITIVE — all four legs pass.
+  // Conclusive POSITIVE — JWS sig verified, RFC 5280 path validated to a TL-granted CA/QC anchor, QcStatements present.
   return {
     qualified: true,
     status: 'qualified',
-    reason: `valid QES: signature verified, path anchored, QcStatements present (QcCompliance${qc.qcSscd ? ' + QcSSCD' : ''} + QcType-eSign), issuer is granted CA/QC-for-eSignatures "${tl.serviceName}" at signing time`,
+    reason: `valid QES: signature verified, path validated (RFC 5280, depth ${path.depth}) to TL-granted CA/QC-for-eSignatures "${path.anchorServiceName}", QcStatements present (QcCompliance${qc.qcSscd ? ' + QcSSCD' : ''} + QcType-eSign) at signing time`,
     signatureRef,
     signerIdentity: extractSignerIdentity(leaf),
     indication: 'TOTAL-PASSED',
@@ -263,6 +274,7 @@ export async function validateQes(input: QesValidationInput): Promise<QesValidat
     adesLevel,
     reportRef: `offline-js:${signatureRef?.slice(0, 16)}`,
     backend: 'offline-js',
+    anchorFingerprint: path.anchorCertDer ? sha256Hex(Buffer.from(path.anchorCertDer, 'base64'), 'buffer') : null,
   };
 }
 
@@ -365,55 +377,118 @@ function verifyJwsSignature(jws: ParsedJws, leaf: X509Certificate): { ok: boolea
   }
 }
 
-// ── (3) certificate-path build + verification (ETSI TS 119 102-1) ──────────────────────────────────
+// ── (3) certification-path build + validation (RFC 5280 §6) with TL-derived anchor (ETSI TS 119 615) ──
+//
+// Generalizes the old one-hop builder (Defect 1): walk leaf → … → anchor at ANY depth, validating every
+// link per RFC 5280 §6 (signature, validity-at-signing-time, name-chain, cA, pathLenConstraint, keyUsage).
+// The anchor is NOT the x5c top (Defect 2): x5c + hints are untrusted building material; the path is
+// anchored only at the first cert the LOTL resolver (matchGrantedCaQc) calls a granted CA/QC-for-eSig
+// service at signing time. A chain that internally verifies to an attacker's self-signed root therefore
+// does NOT anchor (it is never on the Trusted List).
 
-interface PathResult {
+interface AnchorPathResult {
   ok: boolean;
-  broken: boolean; // true ⇒ a signature in the presented chain is invalid (conclusive fail, not indeterminate)
+  broken: boolean; // an RFC 5280 link failed (conclusive)
+  notAnchored: boolean; // well-formed chain that reached no TL-granted CA/QC service (conclusive)
   reason: string;
-  issuerDer: string; // base64 DER of the CA that issued the leaf (matched to the TSL CA/QC service)
+  subIndication: string | null;
+  depth: number; // links validated leaf → anchor
+  anchorCertDer: string; // base64 DER of the TL-granted anchor cert (feed back through matchGrantedCaQc ⇒ granted)
+  anchorServiceName: string | null;
 }
 
-/** Verify leaf is signed by the next cert, walking to a presented or injected trust anchor. */
-function buildAndVerifyPath(x5cB64: string[], trustAnchorsDer: string[]): PathResult {
-  const anchors = trustAnchorsDer
-    .map((d) => {
-      try {
-        return new X509Certificate(Buffer.from(d, 'base64'));
-      } catch {
-        return null;
-      }
-    })
-    .filter((c): c is X509Certificate => c != null);
-  const anchorFps = new Set(anchors.map((a) => fp256(a)));
+/** Validity of a cert at the (single) reference time. */
+function validAt(cert: X509Certificate, ms: number): { ok: true } | { ok: false; reason: string; sub: string } {
+  const vfrom = Date.parse(cert.validFrom);
+  const vto = Date.parse(cert.validTo);
+  if (Number.isFinite(vfrom) && ms < vfrom) return { ok: false, reason: `not yet valid at signing time (notBefore ${new Date(vfrom).toISOString()})`, sub: 'NOT_YET_VALID' };
+  if (Number.isFinite(vto) && ms > vto) return { ok: false, reason: `expired at signing time (notAfter ${new Date(vto).toISOString()})`, sub: 'EXPIRED' };
+  return { ok: true };
+}
 
-  const chain: X509Certificate[] = [];
-  for (const b of x5cB64) {
+/** RFC 5280 §4.2.1.9 basicConstraints (node exposes `ca` but NOT pathLenConstraint → DER-parse). */
+function parseBasicConstraints(certDer: Buffer): { cA: boolean; pathLen: number | null } {
+  const ext = findExtension(certDer, OID_BASIC_CONSTRAINTS);
+  if (!ext) return { cA: false, pathLen: null };
+  const seq = readTLV(ext, 0);
+  let cA = false;
+  let pathLen: number | null = null;
+  for (const t of children(ext, seq.vStart, seq.vEnd)) {
+    if (t.tag === 0x01) cA = ext[t.vStart] !== 0x00; // BOOLEAN
+    else if (t.tag === 0x02) {
+      let v = 0;
+      for (let i = t.vStart; i < t.vEnd; i++) v = (v << 8) | ext[i]; // INTEGER pathLenConstraint
+      pathLen = v;
+    }
+  }
+  return { cA, pathLen };
+}
+
+/** RFC 5280 §4.2.1.3 keyUsage (node `keyUsage` is undefined here → DER-parse the BIT STRING; keyCertSign = bit 5). */
+function parseKeyUsage(certDer: Buffer): { present: boolean; keyCertSign: boolean } {
+  const ext = findExtension(certDer, OID_KEY_USAGE);
+  if (!ext) return { present: false, keyCertSign: false };
+  const bs = readTLV(ext, 0); // BIT STRING: [unusedBits][bit bytes…]
+  const firstBitByte = ext[bs.vStart + 1] ?? 0;
+  return { present: true, keyCertSign: (firstBitByte & 0x04) !== 0 }; // bit 5 from MSB
+}
+
+function buildAndAnchorPath(args: { x5cB64: string[]; hintsDer: string[]; tslXml: string; signingTimeMs: number }): AnchorPathResult {
+  const fail = (reason: string, sub: string, broken = false, notAnchored = false): AnchorPathResult => ({ ok: false, broken, notAnchored, reason, subIndication: sub, depth: 0, anchorCertDer: '', anchorServiceName: null });
+  const parse = (b: string): X509Certificate | null => {
     try {
-      chain.push(new X509Certificate(Buffer.from(b, 'base64')));
-    } catch (e) {
-      return { ok: false, broken: true, reason: `x5c entry not a valid certificate: ${(e as Error).message}`, issuerDer: '' };
+      return new X509Certificate(Buffer.from(b, 'base64'));
+    } catch {
+      return null;
     }
-  }
-  const leaf = chain[0];
+  };
+  const x5c = args.x5cB64.map(parse);
+  if (x5c.some((c) => c == null)) return fail('an x5c entry is not a valid certificate', 'FORMAT_FAILURE', true);
+  // x5c + hints are UNTRUSTED path-building material (never a trust source).
+  const pool = [...(x5c as X509Certificate[]), ...args.hintsDer.map(parse).filter((c): c is X509Certificate => c != null)];
+  const leaf = (x5c as X509Certificate[])[0];
 
-  // Find the issuer of the leaf from the presented chain or the injected anchors.
-  const candidates = [...chain.slice(1), ...anchors];
-  const issuer = candidates.find((c) => safeCheckIssued(leaf, c));
-  if (!issuer) {
-    return { ok: false, broken: false, reason: 'no issuer certificate found for the leaf (chain not anchored)', issuerDer: '' };
-  }
-  if (!safeVerify(leaf, issuer)) {
-    return { ok: false, broken: true, reason: 'leaf signature does not verify against its issuer public key', issuerDer: '' };
-  }
-  // The issuer must itself be a trust anchor, or be signed by one (one extra hop for our subset).
-  if (!anchorFps.has(fp256(issuer))) {
-    const upper = anchors.find((a) => safeCheckIssued(issuer, a) && safeVerify(issuer, a));
-    if (!upper) {
-      return { ok: false, broken: false, reason: 'issuer CA does not terminate at a supplied trust anchor', issuerDer: '' };
+  const lv = validAt(leaf, args.signingTimeMs);
+  if (!lv.ok) return fail(`signing certificate ${lv.reason}`, lv.sub, true);
+
+  let current = leaf;
+  let caBelow = 0; // CA certs already in the path below the issuer under test (pathLenConstraint accounting)
+  let lastMatchReason = ''; // most-informative resolver reason (e.g. "matched only a TSA/QTST service")
+  const seen = new Set<string>([fp256(leaf)]);
+  for (let depth = 0; depth < MAX_PATH_DEPTH; depth++) {
+    // Anchor test (ruling 2): is THIS cert a granted CA/QC-for-eSig service on the TL at signing time?
+    const m = matchGrantedCaQc(args.tslXml, fp256(current), args.signingTimeMs);
+    if (m.matched) {
+      return { ok: true, broken: false, notAnchored: false, reason: `anchored at TL-granted CA/QC service "${m.serviceName ?? ''}"`, subIndication: null, depth, anchorCertDer: current.raw.toString('base64'), anchorServiceName: m.serviceName ?? null };
     }
+    if (m.reason) lastMatchReason = m.reason;
+    // Find the issuer among the untrusted pool (name + key-id chaining).
+    const issuer = pool.find((c) => fp256(c) !== fp256(current) && safeCheckIssued(current, c));
+    if (!issuer) {
+      // Two distinct operator stories (do not collapse):
+      //  • self-issued/top cert reached but NOT on the TL → ANCHOR_NOT_ON_TRUSTED_LIST (this isn't qualified).
+      //  • a non-self-issued cert whose issuer is absent from x5c/hints → CHAIN_INCOMPLETE (fix the producer's
+      //    x5c). The validator does NOT fetch missing issuers (no AIA chasing — offline/trustless by design).
+      if (current.subject === current.issuer) {
+        return fail(`path reached a self-issued top certificate that is NOT a granted CA/QC-for-eSignatures service on the EU Trusted List — the x5c top is NOT a trust anchor (${lastMatchReason || 'not on the TL'})`, 'ANCHOR_NOT_ON_TRUSTED_LIST', false, true);
+      }
+      return fail(`certificate path is incomplete: the issuer of "${current.subject}" is not present in x5c/intermediateHintsDer and the validator does not fetch it (no AIA chasing) — supply the full chain leaf→TL-listed CA`, 'CHAIN_INCOMPLETE', false, true);
+    }
+    if (seen.has(fp256(issuer))) return fail('certificate path loops', 'CHAIN_CONSTRAINTS_FAILURE', true);
+    // ── RFC 5280 §6 link validation: current ← issuer ──
+    if (!safeVerify(current, issuer)) return fail('a certificate signature does not verify under its issuer public key', 'SIG_CRYPTO_FAILURE', true);
+    const iv = validAt(issuer, args.signingTimeMs);
+    if (!iv.ok) return fail(`a CA certificate ${iv.reason}`, iv.sub, true);
+    const bc = parseBasicConstraints(issuer.raw);
+    if (!bc.cA) return fail('a path certificate used as a CA has basicConstraints cA=FALSE', 'CHAIN_CONSTRAINTS_FAILURE', true);
+    if (bc.pathLen != null && bc.pathLen < caBelow) return fail(`pathLenConstraint violated (CA pathLen=${bc.pathLen} < ${caBelow} intermediate CA(s) below it)`, 'CHAIN_CONSTRAINTS_FAILURE', true);
+    const ku = parseKeyUsage(issuer.raw);
+    if (ku.present && !ku.keyCertSign) return fail('a path CA certificate lacks keyUsage keyCertSign', 'CHAIN_CONSTRAINTS_FAILURE', true);
+    seen.add(fp256(issuer));
+    caBelow++;
+    current = issuer;
   }
-  return { ok: true, broken: false, reason: 'path verified to a trust anchor', issuerDer: issuer.raw.toString('base64') };
+  return fail(`certificate path exceeds maximum depth ${MAX_PATH_DEPTH}`, 'CHAIN_CONSTRAINTS_FAILURE', true);
 }
 
 function safeCheckIssued(subject: X509Certificate, issuer: X509Certificate): boolean {
