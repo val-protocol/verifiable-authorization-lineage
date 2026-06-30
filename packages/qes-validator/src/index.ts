@@ -50,6 +50,15 @@ const ASI_FOR_ESIGNATURES = 'http://uri.etsi.org/TrstSvc/TrustedList/SvcInfoExt/
 const STATUS_GRANTED = 'http://uri.etsi.org/TrstSvc/TrustedList/Svcstatus/granted';
 const EU_LOTL_URL = 'https://ec.europa.eu/tools/lotl/eu-lotl.xml';
 
+/**
+ * crit-header allow-list (RFC 7515 §4.1.11). MUST cover EVERY crit param the producer/DSS legitimately
+ * emits at the current AdES baseline, or we reject our own valid signatures. Today: only `sigD` (JAdES
+ * detached, confirmed by the DSS-emitted artifact's `crit:["sigD"]`), which our binding step processes.
+ * When moving to JAdES-BASELINE-T/-LT, DSS may add crit params (e.g. timestamp-related) — extend this
+ * list DELIBERATELY at that bump so a new baseline updates the allow-list instead of breaking silently.
+ */
+const UNDERSTOOD_CRIT: ReadonlySet<string> = new Set(['sigD']);
+
 // ── public contract ─────────────────────────────────────────────────────────────────────────────────
 
 /** eIDAS natural-person minimum dataset, surfaced verbatim from the qualified certificate. */
@@ -175,6 +184,13 @@ export async function validateQes(input: QesValidationInput): Promise<QesValidat
   }
   const adesLevel = jws.header.sigT ? 'JAdES-BASELINE-T(approx)' : 'JAdES-BASELINE-B(approx)';
 
+  // (1a) crit enforcement (RFC 7515 §4.1.11): every header param the signer marks critical MUST be one
+  //      this validator understands and processes, else reject. No silent leniency.
+  const critUnknown = (jws.header.crit ?? []).filter((p) => !UNDERSTOOD_CRIT.has(p));
+  if (critUnknown.length > 0) {
+    return indeterminate(`unsupported critical header param(s) ${JSON.stringify(critUnknown)} — RFC 7515 requires rejecting a signature whose crit set is not fully understood`, 'FORMAT_FAILURE', signatureRef, adesLevel);
+  }
+
   if (!jws.header.x5c || jws.header.x5c.length === 0) {
     return indeterminate('JAdES header carries no x5c certificate chain (cannot identify the signer)', 'NO_SIGNING_CERTIFICATE_FOUND', signatureRef, adesLevel);
   }
@@ -204,6 +220,17 @@ export async function validateQes(input: QesValidationInput): Promise<QesValidat
     return path.broken
       ? notQualified(`certificate path invalid: ${path.reason}`, 'NO_CERTIFICATE_CHAIN_FOUND', signatureRef, adesLevel)
       : indeterminate(`certificate path could not be anchored to a trust anchor: ${path.reason}`, 'NO_CERTIFICATE_CHAIN_FOUND', signatureRef, adesLevel);
+  }
+
+  // (3b) Validity period — the signing cert MUST be valid at signing time (ETSI TS 119 102-1).
+  //      Previously unchecked: an expired/not-yet-valid cert would have passed. Conclusive fail.
+  const vfrom = Date.parse(leaf.validFrom); // RFC string e.g. "Jun 30 00:00:00 2026 GMT"
+  const vto = Date.parse(leaf.validTo);
+  if (Number.isFinite(vfrom) && signingTimeMs < vfrom) {
+    return notQualified(`signing certificate not yet valid at signing time (notBefore ${new Date(vfrom).toISOString()} > ${new Date(signingTimeMs).toISOString()})`, 'NOT_YET_VALID', signatureRef, adesLevel);
+  }
+  if (Number.isFinite(vto) && signingTimeMs > vto) {
+    return notQualified(`signing certificate expired at signing time (notAfter ${new Date(vto).toISOString()} < ${new Date(signingTimeMs).toISOString()})`, 'EXPIRED', signatureRef, adesLevel);
   }
 
   // (4a) QcStatements in the signing cert: QcCompliance AND QcType-eSign both required.

@@ -48,6 +48,19 @@ keyUsage=critical,digitalSignature
 EXT
 mk_leaf plain "/C=US/O=Demo Inc/CN=Bob Demo/GN=Bob/SN=Demo" $D/plain.ext
 
+# sign a leaf from an ALREADY-GENERATED key (mk_leaf hardcodes P-256, so use this for other key types)
+sign_leaf () { # name subj extfile hashalg
+  openssl req -new -key $D/$1.key.pem -subj "$2" -out $D/$1.csr.pem
+  openssl x509 -req -in $D/$1.csr.pem -CA $D/root.cert.pem -CAkey $D/root.key.pem \
+    -CAcreateserial -$4 -days 3650 -extfile "$3" -out $D/$1.cert.pem
+}
+# ES384 qualified leaf (exercises the ES384 verify branch), issued by the same root
+openssl ecparam -name secp384r1 -genkey -noout -out $D/qualified-es384.key.pem
+sign_leaf qualified-es384 "/C=FR/O=ACME SAS/CN=Carol P384/GN=Carol/SN=P384" $D/qc.ext sha384
+# RSA qualified leaf (exercises the PS256 / RSA-PSS verify branch), issued by the same root
+openssl genrsa -out $D/qualified-rsa.key.pem 2048 2>/dev/null
+sign_leaf qualified-rsa "/C=FR/O=ACME SAS/CN=Dan RSA/GN=Dan/SN=RSA" $D/qc.ext sha256
+
 echo "── verify qualified leaf carries qcStatements ──"
 openssl x509 -in $D/qualified.cert.pem -noout -text | grep -A6 -i 'qcstatement\|1.3.6.1.5.5.7.1.3\|Qualified' || true
 rm -f $D/*.csr.pem $D/*.srl

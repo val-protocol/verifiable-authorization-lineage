@@ -23,7 +23,10 @@ const read = (f) => readFileSync(join(FX, f));
 const derB64 = (pem) => new X509Certificate(pem).raw.toString('base64');
 const b64url = (buf) => Buffer.from(buf).toString('base64url');
 
-const SIGNING_MS = Date.parse('2023-06-01T00:00:00Z');
+// Signing time = now: openssl fixtures are generated at test time (valid from now), so the QES signing
+// instant must fall within their validity window. Explicit out-of-window times are passed by the two
+// cert-validity tests below.
+const SIGNING_MS = Date.now();
 const SIGNING_ISO = new Date(SIGNING_MS).toISOString();
 const CANONICAL = JSON.stringify({ v: 2, block_type: 'ASSIGNMENT', scope: { act: ['record.append'] } });
 
@@ -47,11 +50,27 @@ function makeJades({ leaf, key, alg = 'ES256', tamper = false, canonical = CANON
   };
   const protB64 = b64url(Buffer.from(JSON.stringify(protectedHeader)));
   const signingInput = Buffer.from(`${protB64}.`, 'ascii'); // payload empty (detached)
-  const privKey = createPrivateKey(read(key));
-  const sig = cryptoSign('sha256', signingInput, { key: privKey, dsaEncoding: 'ieee-p1363' });
+  const sig = signFor(alg, signingInput, createPrivateKey(read(key)));
   if (tamper) sig[10] ^= 0xff;
   const compact = `${protB64}..${b64url(sig)}`;
   return Buffer.from(compact).toString('base64');
+}
+// alg-aware signer for the test (matches the validator's verify branches)
+function signFor(alg, input, key) {
+  if (alg === 'ES256') return cryptoSign('sha256', input, { key, dsaEncoding: 'ieee-p1363' });
+  if (alg === 'ES384') return cryptoSign('sha384', input, { key, dsaEncoding: 'ieee-p1363' });
+  if (alg === 'RS256') return cryptoSign('sha256', input, key);
+  if (alg === 'PS256') return cryptoSign('sha256', input, { key, padding: 6 /* RSA_PKCS1_PSS_PADDING */, saltLength: 32 });
+  throw new Error('unsupported test alg ' + alg);
+}
+// attached JAdES: payload = canonical (base64url), no sigD → exercises bindsToCanonical attached branch
+function makeJadesAttached({ leaf, key, alg = 'ES256', canonical = CANONICAL }) {
+  const protectedHeader = { alg, x5c: [derB64(read(leaf))], sigT: SIGNING_ISO };
+  const protB64 = b64url(Buffer.from(JSON.stringify(protectedHeader)));
+  const payloadB64 = b64url(Buffer.from(canonical, 'utf8'));
+  const signingInput = Buffer.from(`${protB64}.${payloadB64}`, 'ascii');
+  const sig = signFor(alg, signingInput, createPrivateKey(read(key)));
+  return Buffer.from(`${protB64}.${payloadB64}.${b64url(sig)}`).toString('base64');
 }
 const sigOf = (jades) => ({ alg: 'eidas_qes', signature: jades });
 
@@ -193,4 +212,47 @@ test('matchGrantedCaQc unit: TSA service type is never a qualified-eSig hit', ()
   const fp = createHash('sha256').update(Buffer.from(ROOT_DER_B64, 'base64')).digest('hex');
   assert.equal(matchGrantedCaQc(TSL_TSA_ONLY, fp, SIGNING_MS).matched, false);
   assert.equal(matchGrantedCaQc(TSL_CAQC_GRANTED, fp, SIGNING_MS).matched, true);
+});
+
+// ── deferred-internals coverage (audit 2026-06-30) ──────────────────────────────────────────────────
+const runValid = (jades, vt = SIGNING_ISO, canonical = CANONICAL) =>
+  validateQes({ signedCanonical: canonical, signature: sigOf(jades), validationTime: vt, trust: { tslXml: TSL_CAQC_GRANTED, trustAnchorsDer: anchors } });
+
+test('cert validity: signing time BEFORE notBefore → not_qualified NOT_YET_VALID', async () => {
+  const jades = makeJades({ leaf: 'qualified.cert.pem', key: 'qualified.key.pem' });
+  const r = await runValid(jades, '2009-01-01T00:00:00Z'); // before the fixture cert's notBefore (~2026)
+  console.log('  [not-yet-valid]', r.status, '|', r.subIndication);
+  assert.equal(r.status, 'not_qualified');
+  assert.equal(r.subIndication, 'NOT_YET_VALID');
+});
+
+test('cert validity: signing time AFTER notAfter → not_qualified EXPIRED', async () => {
+  const jades = makeJades({ leaf: 'qualified.cert.pem', key: 'qualified.key.pem' });
+  const r = await runValid(jades, '2099-01-01T00:00:00Z'); // after the fixture cert's notAfter (~2036)
+  console.log('  [expired]', r.status, '|', r.subIndication);
+  assert.equal(r.status, 'not_qualified');
+  assert.equal(r.subIndication, 'EXPIRED');
+});
+
+test('alg ES384: qualified leaf signed ES384 → status=qualified (ES384 verify branch)', async () => {
+  const jades = makeJades({ leaf: 'qualified-es384.cert.pem', key: 'qualified-es384.key.pem', alg: 'ES384' });
+  const r = await runValid(jades);
+  console.log('  [ES384]', r.status, '|', r.signerIdentity?.given_name);
+  assert.equal(r.status, 'qualified');
+  assert.equal(r.signerIdentity?.given_name, 'Carol');
+});
+
+test('alg PS256 (RSA-PSS): qualified RSA leaf signed PS256 → status=qualified (PSS verify branch)', async () => {
+  const jades = makeJades({ leaf: 'qualified-rsa.cert.pem', key: 'qualified-rsa.key.pem', alg: 'PS256' });
+  const r = await runValid(jades);
+  console.log('  [PS256]', r.status, '|', r.signerIdentity?.given_name);
+  assert.equal(r.status, 'qualified');
+  assert.equal(r.signerIdentity?.given_name, 'Dan');
+});
+
+test('attached-payload JAdES (no sigD; payload = canonical) → binding via payload, status=qualified', async () => {
+  const jades = makeJadesAttached({ leaf: 'qualified.cert.pem', key: 'qualified.key.pem' });
+  const r = await runValid(jades);
+  console.log('  [attached]', r.status, '|', r.subIndication, '|', r.reason);
+  assert.equal(r.status, 'qualified'); // bindsToCanonical attached branch exercised
 });
