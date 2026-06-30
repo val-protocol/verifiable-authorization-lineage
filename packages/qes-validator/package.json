@@ -1,7 +1,6 @@
 {
   "name": "@val-protocol/qes-validator",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
   "description": "Caller-side, no-DSS, pure-JS eIDAS QES (Qualified Electronic Signature) validator for VAL Profile C. Validates a detached JAdES delegator signature (JWS parse + x5c signature-value + cert-path + QcStatements + Trusted-List CA/QC-for-eSignatures at signing time) and emits a reproducible QesValidationReport that the zero-dep @val-protocol/chain-verifier consumes. Documented ETSI subset: TS 119 102-1 (steps 2-3) + TS 119 615 (qualification). Per-cert OCSP/CRL + AdES-LTA are out of scope (DSS's job). NOT published.",
   "license": "Apache-2.0",
   "type": "module",
