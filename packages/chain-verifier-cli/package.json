@@ -1,6 +1,6 @@
 {
   "name": "@val-protocol/chain-verifier-cli",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "CLI wrapper for @val-protocol/chain-verifier — one-command offline verification of a VAL audit.export NDJSON chain, from a local file or directly from a VAL operator backend via the MCP audit.export tool.",
   "license": "Apache-2.0",
   "author": "RIGA <hello@riga.solutions>",
@@ -39,7 +39,7 @@
     "prepublishOnly": "node ../../scripts/verify-example-ids.mjs && npm run build"
   },
   "dependencies": {
-    "@val-protocol/chain-verifier": "^0.7.0"
+    "@val-protocol/chain-verifier": "^0.9.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

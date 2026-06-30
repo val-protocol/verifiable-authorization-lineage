@@ -1,6 +1,6 @@
 # @val-protocol/chain-verifier — CHANGELOG
 
-## Unreleased (prepare-only) — Profile C QES verdict seam (ADR 0063)
+## 0.9.0 — 2026-06-30 — Profile C QES verdict seam (ADR 0063)
 
 - **Profile C (eIDAS QES) verdict-consumption seam — additive, default-preserving, still zero-dep.**
   `verifyValChain` gains `options.qesValidation?: { reports: QesVerdict[] }`; `verifyDelegationTrustChain`
@@ -11,8 +11,10 @@
   **unchanged**: Profile C stays classified-not-verified (`qualified_unverified`). The core still does NOT
   do LOTL/X.509/OCSP/AdES — it consumes a reproducible verdict, exactly as Pass 4 consumes `anchorTrust`.
   Tests: `profile-c-qes.test.mjs` (default classified / verified / false-verdict-not-upgraded), suite 54/54.
-  The `qes-validator` implementation is demand-gated (ADR 0063, S1: wrap EU DSS). PREPARE-ONLY — not
-  versioned/published until the operator sequences it.
+  The companion `@val-protocol/qes-validator` (0.1.0) ships alongside this release — implemented **pure-JS,
+  no DSS** (auto-routes CAdES/JAdES, binds `messageDigest == H(canonical)`, resolves trust against the live
+  EU LOTL), superseding ADR 0063 S1's "wrap EU DSS" for the BYO arm. The BYO Profile-C path (signer brings
+  a CAdES/JAdES, RIGA verifies + mints on bind) is live and end-to-end proven (REST + dev-console UI).
 
 ## 0.8.0 — 2026-06-27
 

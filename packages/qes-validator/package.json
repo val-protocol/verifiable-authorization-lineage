@@ -1,8 +1,9 @@
 {
   "name": "@val-protocol/qes-validator",
   "version": "0.1.0",
-  "description": "Caller-side, no-DSS, pure-JS eIDAS QES (Qualified Electronic Signature) validator for VAL Profile C. Validates a detached JAdES delegator signature (JWS parse + x5c signature-value + cert-path + QcStatements + Trusted-List CA/QC-for-eSignatures at signing time) and emits a reproducible QesValidationReport that the zero-dep @val-protocol/chain-verifier consumes. Documented ETSI subset: TS 119 102-1 (steps 2-3) + TS 119 615 (qualification). Per-cert OCSP/CRL + AdES-LTA are out of scope (DSS's job). NOT published.",
+  "description": "Caller-side, no-DSS, pure-JS eIDAS QES (Qualified Electronic Signature) validator for VAL Profile C. Validates a detached/enveloped CAdES (.p7m) or JAdES delegator signature (parse + x5c signature-value + cert-path + QcStatements + Trusted-List CA/QC-for-eSignatures at signing time) and emits a reproducible QesValidationReport that the zero-dep @val-protocol/chain-verifier consumes. Documented ETSI subset: TS 119 102-1 (steps 2-3) + TS 119 615 (qualification). Per-cert OCSP/CRL + AdES-LTA are out of scope (DSS's job).",
   "license": "Apache-2.0",
+  "author": "RIGA <hello@riga.solutions>",
   "type": "module",
   "main": "./dist/cjs/index.js",
   "module": "./dist/esm/index.js",
@@ -16,19 +17,42 @@
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "NOTICE"
   ],
-  "scripts": {
-    "build": "rm -rf dist && tsc -p tsconfig.json && tsc -p tsconfig.cjs.json && node -e \"require('fs').writeFileSync('dist/cjs/package.json', JSON.stringify({type:'commonjs'}))\"",
-    "pretest": "bash test/fixtures/gen.sh && npm run build",
-    "test": "node --test test/*.test.mjs"
-  },
   "keywords": [
     "eidas",
     "qes",
     "qualified-electronic-signature",
     "jades",
+    "cades",
     "ades",
     "val-protocol"
-  ]
+  ],
+  "homepage": "https://github.com/val-protocol/verifiable-authorization-lineage/tree/main/packages/qes-validator",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/val-protocol/verifiable-authorization-lineage.git",
+    "directory": "packages/qes-validator"
+  },
+  "bugs": {
+    "url": "https://github.com/val-protocol/verifiable-authorization-lineage/issues"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.json && tsc -p tsconfig.cjs.json && node -e \"require('fs').writeFileSync('dist/cjs/package.json', JSON.stringify({type:'commonjs'}))\"",
+    "pretest": "bash test/fixtures/gen.sh && npm run build",
+    "test": "node --test test/*.test.mjs",
+    "prepublishOnly": "npm run build && ../../scripts/verify-esm-extensions.sh"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
 }

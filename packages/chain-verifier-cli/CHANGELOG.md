@@ -1,5 +1,13 @@
 # @val-protocol/chain-verifier-cli — CHANGELOG
 
+## 0.3.0 — 2026-06-30
+
+- **Bump `@val-protocol/chain-verifier` `^0.7.0` → `^0.9.0`.** The published CLI was pinned to a verifier
+  two minors stale (a `^0.7.0` caret cannot reach 0.8/0.9), so `val-verify` shipped without Pass 4
+  (external-anchor / RFC 3161, chain-verifier 0.8.0) or the Profile-C QES verdict seam (0.9.0, ADR 0063).
+  This release tracks the current verifier. No CLI surface change — `val-verify` flags/output are unchanged;
+  the underlying verification gains the newer passes.
+
 ## 0.2.0 — 2026-06-11
 
 Initial release under the `@val-protocol` scope — the protocol-level CLI folded in from
