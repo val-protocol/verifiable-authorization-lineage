@@ -2,3 +2,7 @@
 *.pem
 *.ext
 *.srl
+*.p7m
+*.bin
+!*-real.p7m
+!*-real.bin

@@ -40,7 +40,25 @@
  */
 
 import { X509Certificate, createHash, verify as cryptoVerify } from 'node:crypto';
-import { findTslPointer } from '@val-protocol/anchor-lotl-resolver';
+
+/**
+ * Resolve the member-state TSL location for a country from the EU LOTL. Inlined (was reused from
+ * `@val-protocol/anchor-lotl-resolver`) so this package is SELF-CONTAINED and consumable from a CommonJS
+ * backend without an unpublished `.mjs` transitive dependency. Kept byte-identical to the resolver's
+ * function; the live-LOTL differential test still cross-checks against the resolver + DSS.
+ */
+function findTslPointer(lotlXml: string, country: string): string | null {
+  const re = /<(?:[a-z0-9]+:)?OtherTSLPointer>([\s\S]*?)<\/(?:[a-z0-9]+:)?OtherTSLPointer>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(lotlXml))) {
+    const b = m[1];
+    if (new RegExp(`<(?:[a-z0-9]+:)?SchemeTerritory>${country}</`, 'i').test(b)) {
+      const loc = /<(?:[a-z0-9]+:)?TSLLocation>([\s\S]*?\.xml)<\/(?:[a-z0-9]+:)?TSLLocation>/i.exec(b);
+      if (loc) return loc[1].trim();
+    }
+  }
+  return null;
+}
 
 // ── eIDAS / ETSI constants ────────────────────────────────────────────────────────────────────────
 const OID_QC_STATEMENTS = '1.3.6.1.5.5.7.1.3'; // id-pe-qcStatements (RFC 3739)
@@ -192,81 +210,96 @@ export async function validateQes(input: QesValidationInput): Promise<QesValidat
   const signatureBytes = extractSignatureBytes(input.signature);
   const signatureRef = signatureBytes ? sha256Hex(signatureBytes) : null;
   if (!signatureBytes) {
-    return indeterminate('unrecognized signature shape (expected ValQesSignature { alg, signature } or base64 JAdES)', 'FORMAT_FAILURE', null);
+    return indeterminate('unrecognized signature shape (expected ValQesSignature { alg, signature } or base64 JAdES/CAdES)', 'FORMAT_FAILURE', null);
   }
-  const signingTimeMs = input.validationTime ? Date.parse(input.validationTime) : Date.now();
 
-  // (1) Parse the JAdES compact JWS.
-  let jws: ParsedJws;
+  // FRONT-END (format-specific): produce the normalized { x5cB64, signedBytes-bound, signatureValue,
+  // signingTime } by parsing + binding to the canonical + verifying the signature value. Everything AFTER
+  // is format-agnostic (anchorAndQualify). JAdES = JWS compact; CAdES = detached CMS/PKCS#7 (DER).
+  const fe = parseFrontEnd(signatureBytes, input, signatureRef);
+  if (!fe.ok) return fe.verdict;
+
+  // SHARED downstream (format-agnostic): RFC 5280 §6 path → TL anchor → QcStatements → verdict.
+  return anchorAndQualify(fe, input, signatureRef);
+}
+
+/** Normalized output every format front-end produces (after bind + signature-value verification). */
+type FrontEnd = { ok: true; x5cB64: string[]; signingTimeMs: number; adesLevel: string };
+type FrontEndResult = FrontEnd | { ok: false; verdict: QesValidationReport };
+
+/** Detect the format from structure (JWS compact → JAdES; CMS SignedData DER → CAdES) and route. */
+function parseFrontEnd(signatureBytes: string, input: QesValidationInput, signatureRef: string | null): FrontEndResult {
+  let jws: ParsedJws | null = null;
   try {
     jws = parseCompactJades(signatureBytes);
-  } catch (e) {
-    return indeterminate(`JAdES parse failed: ${(e as Error).message} (CAdES/PAdES are out of scope — JAdES only)`, 'FORMAT_FAILURE', signatureRef);
+  } catch {
+    jws = null;
   }
-  const adesLevel = jws.header.sigT ? 'JAdES-BASELINE-T(approx)' : 'JAdES-BASELINE-B(approx)';
+  if (jws) return jadesFrontEnd(jws, input, signatureRef);
 
-  // (1a) crit enforcement (RFC 7515 §4.1.11): every header param the signer marks critical MUST be one
-  //      this validator understands and processes, else reject. No silent leniency.
+  let der: Buffer | null = null;
+  try {
+    der = Buffer.from(signatureBytes.trim(), 'base64');
+  } catch {
+    der = null;
+  }
+  if (der && der.length > 1 && der[0] === 0x30 && looksLikeSignedData(der)) {
+    return cadesFrontEnd(der, input, signatureRef);
+  }
+  return { ok: false, verdict: indeterminate('unrecognized signature format — expected JAdES (JWS compact) or CAdES (detached CMS/PKCS#7 DER); PAdES/XAdES out of scope', 'FORMAT_FAILURE', signatureRef) };
+}
+
+/** JAdES front-end: crit enforcement + x5c + sigD/payload binding + JWS signature-value verification. */
+function jadesFrontEnd(jws: ParsedJws, input: QesValidationInput, signatureRef: string | null): FrontEndResult {
+  const adesLevel = jws.header.sigT ? 'JAdES-BASELINE-T(approx)' : 'JAdES-BASELINE-B(approx)';
+  const signingTimeMs = input.validationTime ? Date.parse(input.validationTime) : Date.now();
   const critUnknown = (jws.header.crit ?? []).filter((p) => !UNDERSTOOD_CRIT.has(p));
   if (critUnknown.length > 0) {
-    return indeterminate(`unsupported critical header param(s) ${JSON.stringify(critUnknown)} — RFC 7515 requires rejecting a signature whose crit set is not fully understood`, 'FORMAT_FAILURE', signatureRef, adesLevel);
+    return { ok: false, verdict: indeterminate(`unsupported critical header param(s) ${JSON.stringify(critUnknown)} — RFC 7515 requires rejecting a signature whose crit set is not fully understood`, 'FORMAT_FAILURE', signatureRef, adesLevel) };
   }
-
   if (!jws.header.x5c || jws.header.x5c.length === 0) {
-    return indeterminate('JAdES header carries no x5c certificate chain (cannot identify the signer)', 'NO_SIGNING_CERTIFICATE_FOUND', signatureRef, adesLevel);
+    return { ok: false, verdict: indeterminate('JAdES header carries no x5c certificate chain (cannot identify the signer)', 'NO_SIGNING_CERTIFICATE_FOUND', signatureRef, adesLevel) };
   }
-
-  // (1b) Bind the detached signature to the canonical bytes (sigD ObjectIdByURIHash), else attached payload.
   const bind = bindsToCanonical(jws, input.signedCanonical);
   if (!bind.ok) {
-    return notQualified(`signature does not bind the supplied canonical bytes: ${bind.reason}`, 'HASH_FAILURE', signatureRef, adesLevel);
+    return { ok: false, verdict: notQualified(`signature does not bind the supplied canonical bytes: ${bind.reason}`, 'HASH_FAILURE', signatureRef, adesLevel) };
   }
-
-  // (2) Verify the signature value over the JWS signing input with the leaf public key.
   let leaf: X509Certificate;
   try {
     leaf = new X509Certificate(Buffer.from(jws.header.x5c[0], 'base64'));
   } catch (e) {
-    return indeterminate(`leaf certificate (x5c[0]) is not a valid X.509: ${(e as Error).message}`, 'FORMAT_FAILURE', signatureRef, adesLevel);
+    return { ok: false, verdict: indeterminate(`leaf certificate (x5c[0]) is not a valid X.509: ${(e as Error).message}`, 'FORMAT_FAILURE', signatureRef, adesLevel) };
   }
   const sigOk = verifyJwsSignature(jws, leaf);
   if (!sigOk.ok) {
-    return notQualified(`signature-value verification failed: ${sigOk.reason}`, 'SIG_CRYPTO_FAILURE', signatureRef, adesLevel);
+    return { ok: false, verdict: notQualified(`signature-value verification failed: ${sigOk.reason}`, 'SIG_CRYPTO_FAILURE', signatureRef, adesLevel) };
   }
+  return { ok: true, x5cB64: jws.header.x5c, signingTimeMs, adesLevel };
+}
 
-  // (3) Resolve the Trusted List ONCE (the single trust source; ADR 0063 ruling 1). The same `tslXml`
-  //     and the single `signingTimeMs` feed path-validity, cert-validity, and TL-granted-at-time (ruling 3).
+/** Shared downstream: resolve the TL once, build+validate the RFC 5280 path to a TL anchor, QcStatements. */
+async function anchorAndQualify(fe: FrontEnd, input: QesValidationInput, signatureRef: string | null): Promise<QesValidationReport> {
+  const { x5cB64, signingTimeMs, adesLevel } = fe;
+  const leaf = new X509Certificate(Buffer.from(x5cB64[0], 'base64'));
+  // Resolve the Trusted List ONCE (single trust source; ruling 1). The same tslXml + single signingTimeMs
+  // feed path-validity, cert-validity, and TL-granted-at-time (ruling 3 — one reference instant).
   const tslRes = await resolveTslXml(input.trust, leaf);
   if (tslRes.indeterminate) {
     return indeterminate(`Trusted List unavailable: ${tslRes.reason}`, 'CERTIFICATE_CHAIN_GENERAL_FAILURE', signatureRef, adesLevel);
   }
-
-  // (3a) Build + RFC 5280 §6 validate the path leaf → … → anchor, where the ANCHOR is the first cert the
-  //      TL resolver calls a granted CA/QC-for-eSignatures service (NOT the x5c top — ruling 1/2).
-  const path = buildAndAnchorPath({
-    x5cB64: jws.header.x5c,
-    hintsDer: input.trust.intermediateHintsDer ?? [],
-    tslXml: tslRes.xml!,
-    signingTimeMs,
-  });
+  const path = buildAndAnchorPath({ x5cB64, hintsDer: input.trust.intermediateHintsDer ?? [], tslXml: tslRes.xml!, signingTimeMs });
   if (!path.ok) {
-    // broken ⇒ RFC 5280 link failure (conclusive); notAnchored ⇒ well-formed but no TL anchor (conclusive
-    // not_qualified — never "trusted because it was the top of the bundle").
     return notQualified(`certificate path: ${path.reason}`, path.subIndication, signatureRef, adesLevel);
   }
-
-  // (4a) QcStatements in the signing cert: QcCompliance AND QcType-eSign both required.
   const qc = extractQcStatements(leaf);
   if (!qc.qcCompliance || !qc.qcTypeEsign) {
     const miss = [!qc.qcCompliance && 'QcCompliance', !qc.qcTypeEsign && 'QcType-eSign'].filter(Boolean).join(' + ');
     return notQualified(`signing certificate lacks required QcStatements (${miss}) — not a qualified e-signature certificate`, 'CHAIN_CONSTRAINTS_FAILURE', signatureRef, adesLevel);
   }
-
-  // Conclusive POSITIVE — JWS sig verified, RFC 5280 path validated to a TL-granted CA/QC anchor, QcStatements present.
   return {
     qualified: true,
     status: 'qualified',
-    reason: `valid QES: signature verified, path validated (RFC 5280, depth ${path.depth}) to TL-granted CA/QC-for-eSignatures "${path.anchorServiceName}", QcStatements present (QcCompliance${qc.qcSscd ? ' + QcSSCD' : ''} + QcType-eSign) at signing time`,
+    reason: `valid QES (${adesLevel}): signature verified, path validated (RFC 5280, depth ${path.depth}) to TL-granted CA/QC-for-eSignatures "${path.anchorServiceName}", QcStatements present (QcCompliance${qc.qcSscd ? ' + QcSSCD' : ''} + QcType-eSign) at signing time`,
     signatureRef,
     signerIdentity: extractSignerIdentity(leaf),
     indication: 'TOTAL-PASSED',
@@ -339,6 +372,182 @@ function bindsToCanonical(jws: ParsedJws, canonical: string): { ok: boolean; rea
 
 function normalizeB64url(s: string): string {
   return s.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+// ── CAdES front-end: detached CMS/PKCS#7 (.p7m) → the same { x5c, signingTime } the JAdES parser yields ──
+// CAdES is what most EU QTSPs + a notary's clé REAL emit. This is a FRONT-END only: it extracts the signer
+// cert chain, verifies the signature over the DER-encoded SignedAttributes, and BINDS via the messageDigest
+// attribute (= SHA-256 of the content, which MUST equal SHA-256(grant canonical)). Everything downstream
+// (path → TL anchor → QcStatements) is the shared, format-agnostic pipeline.
+const OID_SIGNED_DATA = '1.2.840.113549.1.7.2';
+const OID_MESSAGE_DIGEST = '1.2.840.113549.1.9.4';
+const OID_SIGNING_TIME = '1.2.840.113549.1.9.5';
+const CMS_SIG_ALG: Record<string, { hash: string; type: 'ec' | 'rsa' | 'rsa-pss' }> = {
+  '1.2.840.10045.4.3.2': { hash: 'sha256', type: 'ec' },
+  '1.2.840.10045.4.3.3': { hash: 'sha384', type: 'ec' },
+  '1.2.840.10045.4.3.4': { hash: 'sha512', type: 'ec' },
+  '1.2.840.113549.1.1.11': { hash: 'sha256', type: 'rsa' },
+  '1.2.840.113549.1.1.12': { hash: 'sha384', type: 'rsa' },
+  '1.2.840.113549.1.1.13': { hash: 'sha512', type: 'rsa' },
+  '1.2.840.113549.1.1.10': { hash: 'sha256', type: 'rsa-pss' },
+};
+// CMS SignerInfo digestAlgorithm (the algorithm the messageDigest attribute was computed with). The QTSP
+// chooses this (SHA-256/384/512 are all eIDAS-valid) — the bind MUST hash the canonical with THIS algorithm,
+// never a hardcoded SHA-256. (SHA-1 deliberately absent → unsupported → reject.)
+const CMS_DIGEST_ALG: Record<string, string> = {
+  '2.16.840.1.101.3.4.2.1': 'sha256',
+  '2.16.840.1.101.3.4.2.2': 'sha384',
+  '2.16.840.1.101.3.4.2.3': 'sha512',
+};
+
+function looksLikeSignedData(der: Buffer): boolean {
+  try {
+    const ci = readTLV(der, 0);
+    const first = children(der, ci.vStart, ci.vEnd)[0];
+    return first.tag === 0x06 && decodeOid(der, first.vStart, first.vEnd) === OID_SIGNED_DATA;
+  } catch {
+    return false;
+  }
+}
+
+function parseAsn1Time(der: Buffer, node: TLV): number {
+  const s = der.subarray(node.vStart, node.vEnd).toString('ascii');
+  if (node.tag === 0x17) {
+    const m = /^(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})Z$/.exec(s);
+    if (!m) return NaN;
+    const yy = +m[1];
+    return Date.UTC(yy < 50 ? 2000 + yy : 1900 + yy, +m[2] - 1, +m[3], +m[4], +m[5], +m[6]);
+  }
+  if (node.tag === 0x18) {
+    const m = /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})/.exec(s);
+    if (!m) return NaN;
+    return Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]);
+  }
+  return NaN;
+}
+
+function cadesFrontEnd(der: Buffer, input: QesValidationInput, signatureRef: string | null): FrontEndResult {
+  const fail = (reason: string, sub: string, status: 'indeterminate' | 'not_qualified' = 'not_qualified'): FrontEndResult => ({
+    ok: false,
+    verdict: status === 'indeterminate' ? indeterminate(reason, sub, signatureRef, 'CAdES-BES(approx)') : notQualified(reason, sub, signatureRef, 'CAdES-BES(approx)'),
+  });
+  try {
+    const ci = readTLV(der, 0);
+    const ciCh = children(der, ci.vStart, ci.vEnd);
+    const content0 = children(der, ciCh[1].vStart, ciCh[1].vEnd)[0]; // [0] EXPLICIT → SignedData
+    const sdCh = children(der, content0.vStart, content0.vEnd);
+    // encapContentInfo (first SEQUENCE in SignedData): ENVELOPED CMS embeds eContent [0]; DETACHED omits it.
+    let embeddedContent: Buffer | null = null;
+    const encap = sdCh.find((t) => t.tag === 0x30);
+    if (encap) {
+      const eContent = children(der, encap.vStart, encap.vEnd).find((t) => t.tag === 0xa0); // [0] EXPLICIT
+      if (eContent) {
+        const oct = children(der, eContent.vStart, eContent.vEnd)[0]; // OCTET STRING (primitive; BER-chunked = open-set)
+        if (oct && oct.tag === 0x04) embeddedContent = Buffer.from(der.subarray(oct.vStart, oct.vEnd));
+      }
+    }
+    const certsNode = sdCh.find((t) => t.tag === 0xa0); // certificates [0] IMPLICIT
+    if (!certsNode) return fail('CMS carries no certificates', 'NO_SIGNING_CERTIFICATE_FOUND', 'indeterminate');
+    const certs = children(der, certsNode.vStart, certsNode.vEnd)
+      .filter((t) => t.tag === 0x30)
+      .map((t) => new X509Certificate(der.subarray(t.hStart, t.vEnd)));
+    const siSet = [...sdCh].reverse().find((t) => t.tag === 0x31); // signerInfos is the last SET
+    if (!siSet) return fail('CMS has no signerInfos', 'FORMAT_FAILURE', 'indeterminate');
+    const si = children(der, siSet.vStart, siSet.vEnd).find((t) => t.tag === 0x30);
+    if (!si) return fail('CMS signerInfos empty', 'FORMAT_FAILURE', 'indeterminate');
+    const siCh = children(der, si.vStart, si.vEnd);
+
+    const saIdx = siCh.findIndex((t) => t.tag === 0xa0); // signedAttrs [0] IMPLICIT
+    if (saIdx < 0) return fail('CMS SignerInfo has no signed attributes (CAdES messageDigest binding required)', 'FORMAT_FAILURE', 'indeterminate');
+    const signedAttrs = siCh[saIdx];
+    const sigAlgNode = siCh.slice(saIdx + 1).find((t) => t.tag === 0x30);
+    const sigNode = siCh.slice(saIdx + 1).find((t) => t.tag === 0x04);
+    if (!sigAlgNode || !sigNode) return fail('CMS SignerInfo missing signatureAlgorithm or signature', 'FORMAT_FAILURE', 'indeterminate');
+    const sigAlgOid = decodeOid(der, children(der, sigAlgNode.vStart, sigAlgNode.vEnd)[0].vStart, children(der, sigAlgNode.vStart, sigAlgNode.vEnd)[0].vEnd);
+    const alg = CMS_SIG_ALG[sigAlgOid];
+    if (!alg) return fail(`unsupported CMS signature algorithm ${sigAlgOid}`, 'FORMAT_FAILURE', 'indeterminate');
+    const signature = der.subarray(sigNode.vStart, sigNode.vEnd);
+
+    // signed attribute lookup (SET OF Attribute; each = SEQUENCE { OID, SET attrValues })
+    const attrs = children(der, signedAttrs.vStart, signedAttrs.vEnd);
+    const attrVal = (oid: string): TLV | null => {
+      for (const a of attrs) {
+        const ac = children(der, a.vStart, a.vEnd);
+        if (ac[0]?.tag === 0x06 && decodeOid(der, ac[0].vStart, ac[0].vEnd) === oid && ac[1]) {
+          return children(der, ac[1].vStart, ac[1].vEnd)[0] ?? null;
+        }
+      }
+      return null;
+    };
+
+    // THE BINDING TRAP — check (1) "the signature binds to THESE bytes": messageDigest == H_cms(canonical),
+    // where H_cms is the CMS-DECLARED digestAlgorithm (NOT a hardcoded SHA-256 — the QTSP may use
+    // SHA-256/384/512, all eIDAS-valid). check (2) "those bytes are the grant's canonical" is the caller's
+    // job: `input.signedCanonical` IS canonicalJsonStringify(grant), identified upstream. A qualified
+    // signature over the wrong bytes (some uploaded doc) must NOT validate as a bound Profile-C signature.
+    const digestAlgNode = siCh.find((t, i) => i >= 2 && i < saIdx && t.tag === 0x30); // version, sid, digestAlgorithm, …
+    const digestOid = digestAlgNode ? decodeOid(der, children(der, digestAlgNode.vStart, digestAlgNode.vEnd)[0].vStart, children(der, digestAlgNode.vStart, digestAlgNode.vEnd)[0].vEnd) : null;
+    const hCms = digestOid ? CMS_DIGEST_ALG[digestOid] : null;
+    if (!hCms) return fail(`unsupported or missing CMS digestAlgorithm ${digestOid ?? '(none)'} (expected SHA-256/384/512)`, 'FORMAT_FAILURE', 'indeterminate');
+    const mdNode = attrVal(OID_MESSAGE_DIGEST);
+    if (!mdNode) return fail('CMS has no messageDigest signed attribute (cannot bind to the grant)', 'HASH_FAILURE');
+    const messageDigest = der.subarray(mdNode.vStart, mdNode.vEnd);
+    const canonicalBuf = Buffer.from(input.signedCanonical, 'utf8');
+    // The bytes the signature is over: the EMBEDDED content (enveloped) or the supplied canonical (detached).
+    const signedBytes = embeddedContent ?? canonicalBuf;
+    const wantDigest = createHash(hCms).update(signedBytes).digest(); // (1) H_cms(signed content) — algorithm-agnostic
+    if (!messageDigest.equals(wantDigest)) {
+      return fail(`CMS messageDigest does not equal ${hCms.toUpperCase()}(signed content) — the signature is not over these bytes`, 'HASH_FAILURE');
+    }
+    // (2) those bytes ARE the grant canonical. Detached: signedBytes === canonical by construction. Enveloped:
+    // the embedded content MUST equal the grant canonical, else a qualified sig over a DIFFERENT document slips in.
+    if (embeddedContent && !embeddedContent.equals(canonicalBuf)) {
+      return fail('enveloped CMS embedded content does not equal the grant canonical bytes — signature is over a different document', 'HASH_FAILURE');
+    }
+
+    // signer cert: the issuerAndSerialNumber sid → match the embedded cert by serial; else the non-CA leaf.
+    let leaf = certs.find((c) => c.ca === false) ?? certs[0];
+    const sid = siCh[1];
+    if (sid?.tag === 0x30) {
+      const serialNode = children(der, sid.vStart, sid.vEnd).find((t) => t.tag === 0x02);
+      if (serialNode) {
+        const serial = der.subarray(serialNode.vStart, serialNode.vEnd).toString('hex').toUpperCase().replace(/^0+/, '');
+        const m = certs.find((c) => c.serialNumber.toUpperCase().replace(/^0+/, '') === serial);
+        if (m) leaf = m;
+      }
+    }
+
+    // signature-value verification over the DER-encoded SignedAttributes RE-TAGGED as SET (RFC 5652 §5.4):
+    // CAdES signs SET OF Attribute, but it travels [0] IMPLICIT — swap the tag byte 0xA0 → 0x31 to verify.
+    const saDer = Buffer.from(der.subarray(signedAttrs.hStart, signedAttrs.vEnd));
+    saDer[0] = 0x31;
+    const verifyKey =
+      alg.type === 'ec'
+        ? { key: leaf.publicKey, dsaEncoding: 'der' as const }
+        : alg.type === 'rsa-pss'
+          ? { key: leaf.publicKey, padding: 6, saltLength: 32 }
+          : leaf.publicKey;
+    let sigOk = false;
+    try {
+      sigOk = cryptoVerify(alg.hash, saDer, verifyKey as never, signature);
+    } catch {
+      sigOk = false;
+    }
+    if (!sigOk) return fail('CMS signature does not verify over the signed attributes', 'SIG_CRYPTO_FAILURE');
+
+    const stNode = attrVal(OID_SIGNING_TIME);
+    const signingTimeMs = input.validationTime
+      ? Date.parse(input.validationTime)
+      : stNode
+        ? parseAsn1Time(der, stNode)
+        : Date.now();
+
+    // leaf first, then the rest of the bundle (untrusted path-building hints for the shared walker).
+    const x5cB64 = [leaf.raw.toString('base64'), ...certs.filter((c) => c !== leaf).map((c) => c.raw.toString('base64'))];
+    return { ok: true, x5cB64, signingTimeMs: Number.isFinite(signingTimeMs) ? signingTimeMs : Date.now(), adesLevel: 'CAdES-BES(approx)' };
+  } catch (e) {
+    return fail(`CAdES parse failed: ${(e as Error).message}`, 'FORMAT_FAILURE', 'indeterminate');
+  }
 }
 
 // ── (2) signature-value verification (ETSI TS 119 102-1) ────────────────────────────────────────────

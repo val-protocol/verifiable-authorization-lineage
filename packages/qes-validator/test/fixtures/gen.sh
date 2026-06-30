@@ -120,6 +120,16 @@ EXT
 openssl ecparam -name prime256v1 -genkey -noout -out $D/leaf-fakeca.key.pem
 sign_by leaf-fakeca "/C=FR/O=ACME SAS/CN=Heidi/GN=Heidi/SN=Fake" $D/leaf-fakeca.ext sha256 fakeca
 
+# CAdES (.p7m) detached-CMS fixtures over the grant canonical (CAdES front-end tests). The grant canonical
+# is the EXACT bytes the validator binds to; messageDigest must equal SHA-256 of it.
+printf '%s' '{"v":2,"block_type":"ASSIGNMENT","scope":{"act":["record.append"]}}' > $D/grant-canonical.bin
+printf '%s' 'totally different document the user uploaded' > $D/other-content.bin
+openssl cms -sign -binary -in $D/grant-canonical.bin -signer $D/qualified.cert.pem -inkey $D/qualified.key.pem -certfile $D/root.cert.pem -outform DER -out $D/cades-qualified.p7m 2>/dev/null   # qualified leaf, over the canonical
+openssl cms -sign -binary -in $D/other-content.bin   -signer $D/qualified.cert.pem -inkey $D/qualified.key.pem -certfile $D/root.cert.pem -outform DER -out $D/cades-wrongbytes.p7m 2>/dev/null  # qualified leaf, WRONG bytes (binding negative)
+openssl cms -sign -binary -md sha384 -in $D/grant-canonical.bin -signer $D/qualified.cert.pem -inkey $D/qualified.key.pem -certfile $D/root.cert.pem -outform DER -out $D/cades-qualified-sha384.p7m 2>/dev/null  # SHA-384 messageDigest (digest-agnostic bind)
+openssl cms -sign -binary -nodetach -in $D/grant-canonical.bin -signer $D/qualified.cert.pem -inkey $D/qualified.key.pem -certfile $D/root.cert.pem -outform DER -out $D/cades-enveloped.p7m 2>/dev/null       # ENVELOPED (content embedded), over the canonical
+openssl cms -sign -binary -nodetach -in $D/other-content.bin   -signer $D/qualified.cert.pem -inkey $D/qualified.key.pem -certfile $D/root.cert.pem -outform DER -out $D/cades-enveloped-wrong.p7m 2>/dev/null  # ENVELOPED over WRONG content (embedded != canonical)
+
 echo "── verify qualified leaf carries qcStatements ──"
 openssl x509 -in $D/qualified.cert.pem -noout -text | grep -A6 -i 'qcstatement\|1.3.6.1.5.5.7.1.3\|Qualified' || true
 rm -f $D/*.csr.pem $D/*.srl

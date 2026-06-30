@@ -1,0 +1,1 @@
+{"block_type":"ASSIGNMENT","grantee":{"kind":"agent","service_account":"sa-demo-001"},"grantor":{"org":"demo-firm","role":"owner"},"scope":{"act":["record.append","record.read"],"res":{"in_dataroom":"demo-dataroom"}},"v":2}

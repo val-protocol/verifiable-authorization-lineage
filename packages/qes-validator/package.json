@@ -5,12 +5,14 @@
   "description": "Caller-side, no-DSS, pure-JS eIDAS QES (Qualified Electronic Signature) validator for VAL Profile C. Validates a detached JAdES delegator signature (JWS parse + x5c signature-value + cert-path + QcStatements + Trusted-List CA/QC-for-eSignatures at signing time) and emits a reproducible QesValidationReport that the zero-dep @val-protocol/chain-verifier consumes. Documented ETSI subset: TS 119 102-1 (steps 2-3) + TS 119 615 (qualification). Per-cert OCSP/CRL + AdES-LTA are out of scope (DSS's job). NOT published.",
   "license": "Apache-2.0",
   "type": "module",
-  "main": "./dist/esm/index.js",
+  "main": "./dist/cjs/index.js",
+  "module": "./dist/esm/index.js",
   "types": "./dist/esm/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/esm/index.d.ts",
-      "import": "./dist/esm/index.js"
+      "import": "./dist/esm/index.js",
+      "require": "./dist/cjs/index.js"
     }
   },
   "files": [
@@ -18,12 +20,9 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "rm -rf dist && tsc -p tsconfig.json && tsc -p tsconfig.cjs.json && node -e \"require('fs').writeFileSync('dist/cjs/package.json', JSON.stringify({type:'commonjs'}))\"",
     "pretest": "bash test/fixtures/gen.sh && npm run build",
     "test": "node --test test/*.test.mjs"
-  },
-  "dependencies": {
-    "@val-protocol/anchor-lotl-resolver": "^0.1.0"
   },
   "keywords": [
     "eidas",
