@@ -789,6 +789,13 @@ export interface ValBlockDelegatorAuthority {
   scope_ref?: string;
   signature?: ValDelegatorSignature;
   org_root?: ValOrgRootAttestation;
+  /** Reserved basis `ceremony_session_delegated` (§7.2, 2026-07-01): the operator principal who
+   *  attested the delegator's entitlement (sha256 of their operator-namespaced id). Tamper-evident
+   *  attestation, NOT offline-provable entitlement — surfaced verbatim in `authorityCarriers`. */
+  attested_by?: string | null;
+  /** Reserved basis `ceremony_session_delegated`: opaque reference to the single-use ceremony
+   *  session that carried the attestation. */
+  session_ref?: string | null;
 }
 
 // ── Profile B/C signature verification (offline, chain-bytes only) ─────────────
@@ -1061,8 +1068,32 @@ export interface ValVerificationResult {
   /** The verified hardware binding of the org-root key (when a Profile-B linkage held).
    *  Surfaced verbatim — `syncable` is never reported as `device_bound`. */
   keyBinding: ValKeyBinding | null;
-  /** Conformance profile read from the root ASSIGNMENTs (§5.2): highest of A/B/C present. */
+  /**
+   * Conformance profile read from the chain's ASSIGNMENTs (§5.2): the FLOOR — the weakest of
+   * A/B/C present. 0.10.0 BEHAVIOR CHANGE (spec amendment 2026-07-01): earlier releases reported
+   * the strongest profile present, which let one qualified grant mask a chain of operator-attested
+   * ones — the exact over-claim the `rootSubject.source` verbatim rule exists to prevent. A
+   * consumer reads `profilesPresent` for the full picture and the per-lineage profile for the
+   * grant they rely on; the chain-level letter is the conservative summary.
+   */
   conformanceProfile: 'A' | 'B' | 'C' | 'unknown';
+  /** 0.10.0 — every profile observed across the chain's ASSIGNMENTs (§5.2 per-lineage model),
+   *  ascending. Additive companion to the floor `conformanceProfile`. */
+  profilesPresent: Array<'A' | 'B' | 'C'>;
+  /**
+   * 0.10.0 — the delegator-authority carriers surfaced verbatim, one per ASSIGNMENT that carries
+   * `human_attestation.delegator_authority` (§7.2 Pass 5). Answers "who attested entitlement?"
+   * from the report alone: `basis` + `capability` are the attested authority claim; `attested_by`
+   * / `session_ref` name the attestor for the reserved `ceremony_session_delegated` basis.
+   * Surfaced VERBATIM — an attested basis is never presented as proven entitlement.
+   */
+  authorityCarriers: Array<{
+    sequenceNumber: string;
+    basis: string | null;
+    capability: string | null;
+    attested_by?: string | null;
+    session_ref?: string | null;
+  }>;
   /**
    * 0.6.0 — the root human's DECLARED identity, read from the root ASSIGNMENT's
    * `human_attestation.identity_assurance` ({ subject_claim, source }). This is the name the lineage
@@ -1274,6 +1305,8 @@ export async function verifyValChain(
     signature: 'none',
     keyBinding: null,
     conformanceProfile: 'unknown',
+    profilesPresent: [],
+    authorityCarriers: [],
     rootSubject: null,
     firstLineageViolation: null,
     firstScopeViolation: null,
@@ -1544,6 +1577,16 @@ export async function verifyValChain(
           }
         } else {
           if (result.authority === 'none') result.authority = 'green';
+          // 0.10.0 — surface the carrier verbatim so the report answers "who attested
+          // entitlement?" without reading raw blocks (§7.3). Never a judgement — an
+          // attested basis is not presented as proven entitlement.
+          result.authorityCarriers.push({
+            sequenceNumber: seqStr,
+            basis: da.basis ?? null,
+            capability: da.capability ?? null,
+            ...(da.attested_by !== undefined ? { attested_by: da.attested_by } : {}),
+            ...(da.session_ref !== undefined ? { session_ref: da.session_ref } : {}),
+          });
           // `container_owner` basis (v0.3.0): chain-internal consistency, policy-
           // independent like carrier presence — the claimed authority must be scoped
           // to the very container this ASSIGNMENT scopes (§7.2 Pass 5).
@@ -1555,6 +1598,37 @@ export async function verifyValChain(
                 result.firstAuthorityViolation = {
                   sequenceNumber: seqStr,
                   reason: `container_owner scope_ref '${da.scope_ref ?? '(none)'}' != ASSIGNMENT scope.res.in_workspace '${ws ?? '(none)'}'`,
+                };
+              }
+            }
+          }
+          // `ceremony_session_delegated` reserved basis (0.10.0, §7.2 Pass 5 / spec amendment
+          // 2026-07-01): an account-less delegation whose entitlement was attested by the
+          // ceremony-session creator. Two chain-byte re-derivations, policy-independent:
+          //   (a) the claimed authority must be scoped to the very container this ASSIGNMENT
+          //       scopes (same shape as container_owner);
+          //   (b) the carrier MUST co-occur with a QUALIFIED delegator signature — account-less
+          //       identity is cert-carried, so an account-less authority claim without a
+          //       qualified instrument has no identity leg to stand on.
+          // Entitlement itself stays attested (attested_by/session_ref surfaced verbatim above),
+          // never offline-proven.
+          if (da.basis === 'ceremony_session_delegated') {
+            const ws = (block.scope?.res?.in_workspace as string | null | undefined) ?? null;
+            if (!da.scope_ref || da.scope_ref !== ws) {
+              result.authority = 'red';
+              if (!result.firstAuthorityViolation) {
+                result.firstAuthorityViolation = {
+                  sequenceNumber: seqStr,
+                  reason: `ceremony_session_delegated scope_ref '${da.scope_ref ?? '(none)'}' != ASSIGNMENT scope.res.in_workspace '${ws ?? '(none)'}'`,
+                };
+              }
+            }
+            if (!da.signature || !QUALIFIED_ALGS.has(da.signature.alg)) {
+              result.authority = 'red';
+              if (!result.firstAuthorityViolation) {
+                result.firstAuthorityViolation = {
+                  sequenceNumber: seqStr,
+                  reason: `ceremony_session_delegated carrier without a qualified delegator signature (alg '${da.signature?.alg ?? '(none)'}') — account-less authority requires a qualified instrument`,
                 };
               }
             }
@@ -1585,6 +1659,10 @@ export async function verifyValChain(
       // self-attested org-root key. conformanceProfile reflects the DECLARED profile; the
       // `signature` field reflects whether it VERIFIED. Both are read together (like
       // integrity/lineage/...). device_bound vs syncable is surfaced verbatim, never rounded up.
+      // 0.10.0: `dsigProfile` records what THIS block's signature classified — under the §5.2
+      // per-lineage FLOOR model, a signed root's profile IS B/C, and the root classification
+      // below must not also add A for it (harmless under the old max; wrong under floor).
+      let dsigProfile: 'B' | 'C' | null = null;
       {
         const dsig = block.human_attestation?.delegator_authority?.signature;
         if (dsig) {
@@ -1613,6 +1691,7 @@ export async function verifyValChain(
             // Earns conformance C + signature green, and surfaces the proven natural-person identity as
             // the root subject (source 'qes'), verbatim — never rounded up.
             profiles.add('C');
+            dsigProfile = 'C';
             if (result.signature === 'none') result.signature = 'green';
             const id = qesVerdict?.signerIdentity;
             const claim = id ? [id.given_name, id.family_name].filter(Boolean).join(' ').trim() : '';
@@ -1624,9 +1703,11 @@ export async function verifyValChain(
             // (qesValidation) — never a silent default. Conformance reflects C; the signature pass is
             // left unchanged (not green, not red).
             profiles.add('C');
+            dsigProfile = 'C';
           } else if (tc.signatureValid && tc.linkageVerified) {
             // Only a VERIFIED + org-root-LINKED signature earns conformance B.
             profiles.add('B');
+            dsigProfile = 'B';
             if (result.signature === 'none') result.signature = 'green';
             if (tc.keyBinding && !result.keyBinding) result.keyBinding = tc.keyBinding;
           } else {
@@ -1646,14 +1727,19 @@ export async function verifyValChain(
           result.lineage = 'red';
           result.firstLineageViolation = { sequenceNumber: seqStr, reason: walk.reason ?? 'sub-ASSIGNMENT lineage failure' };
         }
-        if (walk.profile === 'A') profiles.add('A');
+        // 0.10.0: no profile contribution from the walk — the walked-to root is itself a chain
+        // block and is classified in its OWN iteration (signed → B/C, else A). Adding 'A' here
+        // double-counted signed roots (harmless under the old max; wrong under the floor).
       } else if (!block.human_attestation) {
         if (result.lineage === 'green') {
           result.lineage = 'red';
           result.firstLineageViolation = { sequenceNumber: seqStr, reason: 'root ASSIGNMENT has no human_attestation (not human-rooted)' };
         }
       } else {
-        profiles.add('A');
+        // 0.10.0 floor model: a signed root's profile IS what its signature classified (B/C,
+        // recorded in dsigProfile above); only an UNSIGNED (or failed-signature) human-rooted
+        // root is Profile A. Under the old max this add was unconditional and harmless.
+        if (!dsigProfile) profiles.add('A');
         // 0.6.0 — surface the root human's declared identity (hash-bound in this block's
         // canonical_details, already integrity-checked). First human-rooted root wins; `source`
         // verbatim (never round a self_asserted name up to vouched).
@@ -1687,14 +1773,18 @@ export async function verifyValChain(
     }
   }
 
-  // Conformance = the highest profile declared by the chain's ASSIGNMENTs (§5.2): a
-  // verified device/qualified binding (B/C) supersedes the operator-attested residual (A).
-  result.conformanceProfile = profiles.has('C')
-    ? 'C'
+  // Conformance = the FLOOR — the weakest profile declared by the chain's ASSIGNMENTs (§5.2,
+  // spec amendment 2026-07-01). 0.10.0 BEHAVIOR CHANGE: earlier releases reported the strongest
+  // profile present, letting one qualified grant mask a chain of operator-attested ones — the
+  // exact over-claim the rootSubject.source verbatim rule exists to prevent. Never round up:
+  // per-lineage detail lives in `profilesPresent`; the chain letter is the conservative summary.
+  result.conformanceProfile = profiles.has('A')
+    ? 'A'
     : profiles.has('B')
       ? 'B'
-      : profiles.has('A')
-        ? 'A'
+      : profiles.has('C')
+        ? 'C'
         : 'unknown';
+  result.profilesPresent = (['A', 'B', 'C'] as const).filter((p) => profiles.has(p));
   return result;
 }

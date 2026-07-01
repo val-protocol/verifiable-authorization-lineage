@@ -21,8 +21,11 @@ function signAssertion(challenge, priv, pub) {
   return { alg: 'webauthn', credential_id: 'c', public_key: spkiB64(pub), authenticator_data: b64(authenticatorData), client_data_json: b64(clientDataJson), signature: b64(s.sign({ key: priv, dsaEncoding: 'der' })) };
 }
 
-/** Build a self-attested org-root + a delegation signed by the same key. keyBinding chosen. */
-async function makeSignedAssignment({ keyBinding = 'device_bound', delegationKey, relabelBinding } = {}) {
+/** Build a self-attested org-root + a delegation signed by the same key. keyBinding chosen.
+ *  `identityAssurance` (optional) stamps the block-level human_attestation.identity_assurance —
+ *  the IDENTITY-SOURCE axis (self_asserted | kyb_attested | eidas_eaa | qes), orthogonal to the
+ *  instrument axis this file otherwise exercises. */
+async function makeSignedAssignment({ keyBinding = 'device_bound', delegationKey, relabelBinding, identityAssurance } = {}) {
   const root = newKey();
   const rootSpki = spkiB64(root.publicKey);
   const assurance = { source: 'self_asserted', subject_claim: 'John Doe' };
@@ -34,7 +37,7 @@ async function makeSignedAssignment({ keyBinding = 'device_bound', delegationKey
   const signature = signAssertion('Z3JhbnQ', dk.privateKey, dk.publicKey);
   return {
     v: 2, block_type: 'ASSIGNMENT', scope: { act: ['read'], res: { in_workspace: 'w' } },
-    human_attestation: { method: 'webauthn', subject_user_hash: 'sha256:sig', delegator_authority: { basis: 'org_verified_representative', capability: 'org_verified_representative', scope_ref: 'w', signature, org_root } },
+    human_attestation: { method: 'webauthn', subject_user_hash: 'sha256:sig', ...(identityAssurance ? { identity_assurance: identityAssurance } : {}), delegator_authority: { basis: 'org_verified_representative', capability: 'org_verified_representative', scope_ref: 'w', signature, org_root } },
   };
 }
 
@@ -76,6 +79,25 @@ test('delegation signed by a key that is NOT the enrolled org-root => signature 
 test('relabel key_binding (device_bound→syncable) without re-signing org-root => signature red (tamper-evident)', async () => {
   const r = await verifyValChain(await mkRow(await makeSignedAssignment({ keyBinding: 'device_bound', relabelBinding: 'syncable' })));
   assert.equal(r.signature, 'red');
+});
+
+// ── "B+" cell (device instrument × eID identity source) — the PREPARED-not-built rung of the
+// operator's canonical ladder (2026-07-02): A = self-declaration · B = self-declaration + device ·
+// B+ = eID (e.g. FranceConnect+) + device · C = QES. The profile letter grades the INSTRUMENT;
+// the identity source is an orthogonal axis surfaced verbatim. This locks the cell's rendering
+// BEFORE any eID integration exists, so the future proofing flow is purely additive: a
+// device-signed root carrying identity_assurance.source='eidas_eaa' classifies B (instrument
+// unchanged) and the verifier surfaces the eID source verbatim — never rounded up to a stronger
+// claim, never collapsed back to self_asserted. ──
+test("B+ cell: device-signed root with identity_assurance.source='eidas_eaa' => conformance B, eID source surfaced verbatim", async () => {
+  const r = await verifyValChain(await mkRow(await makeSignedAssignment({
+    keyBinding: 'device_bound',
+    identityAssurance: { source: 'eidas_eaa', subject_claim: 'Jean Dupont' },
+  })));
+  assert.equal(r.conformanceProfile, 'B'); // instrument axis: still a device signature — not C
+  assert.deepEqual(r.profilesPresent, ['B']);
+  assert.equal(r.signature, 'green');
+  assert.deepEqual(r.rootSubject, { subject_claim: 'Jean Dupont', source: 'eidas_eaa' }); // eID axis: verbatim
 });
 
 test('Profile C (qualified alg) => conformance C, classified but not crypto-verified', async () => {

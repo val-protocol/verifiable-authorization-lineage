@@ -2,6 +2,19 @@
 
 All notable changes to the VAL reference packages (`@val-protocol/*`) are documented here. Packages follow [semantic versioning](https://semver.org/); the specification is versioned independently (currently draft v0.1).
 
+## [0.10.0 — UNRELEASED] — 2026-07-01
+
+- **`@val-protocol/chain-verifier` 0.10.0 (unpublished — publish is consent-gated)** — implements the 2026-07-01 spec amendments (report legibility, one release):
+  - **`conformanceProfile` is now the FLOOR** (weakest profile among the chain's ASSIGNMENTs) — **BEHAVIOR CHANGE** for mixed-profile chains (previously the maximum, which let one qualified grant mask a chain of operator-attested ones). New additive `profilesPresent: ('A'|'B'|'C')[]` itemizes every profile observed (§5.2 per-lineage model, §7.3).
+  - **`authorityCarriers`** (additive): every `delegator_authority` carrier surfaced verbatim — `{ sequenceNumber, basis, capability, attested_by?, session_ref? }` — so a report answers "who attested entitlement?" without reading raw blocks. Verbatim, never a judgement.
+  - **Reserved basis `ceremony_session_delegated`** (§7.2 Pass 5): two policy-independent chain-byte re-derivations — `scope_ref == scope.res.in_workspace`, and the carrier MUST co-occur with a **qualified** delegator signature (account-less authority requires a qualified instrument). Additive — fires only on a basis no prior chain emitted.
+
+## [Spec amendments — unreleased] — 2026-07-01
+
+- **Spec** — §5.2: conformance profile is a **per-lineage** property read at each root ASSIGNMENT; a chain MAY carry mixed-profile lineages (replaces "exactly one profile per `chain_scope`"; withdraws the v0.2 profile-change record). §7.3: `conformanceProfile` becomes the **floor** across roots (a verifier MUST NOT round up) + new additive `profilesPresent` itemization; reference status noted (published verifier ≤ 0.9.x still reports the maximum — floor release pending).
+- **Spec** — §7.1: new optional input **(f) QES validation verdicts** (caller-side, reference `@val-protocol/qes-validator` + EU Trusted List). §5.2 Profile C / §7.4 / §7.5 / README: Profile C is **verified** when a verdict is supplied (`authority_verified_qualified`) and classified `qualified_unverified` otherwise — documents the shipped two-package model (previously described as "pending").
+- **Spec** — §7.2 Pass 5: reserved well-known basis **`ceremony_session_delegated`** (account-less hosted-ceremony delegation): two chain-byte re-derivations (`scope_ref == scope.res.in_workspace`; MUST co-occur with a qualified `delegator_authority.signature`), attestor named in-carrier (`attested_by`, `session_ref`); entitlement remains attested, never offline-proven. Verifier support pending; treated as an ordinary operator-namespaced label until then.
+
 ## [0.4.0] — 2026-06-14
 
 - **`@val-protocol/chain-verifier` 0.4.0** — Profile B verification (spec §5.2): the reserved `delegator_authority.signature` slot is now cryptographically verified offline. A present WebAuthn assertion (ES256) is checked against its embedded key AND must chain to the enrolled, self-attested org-root (`org_root.self_signature` over `orgRootBindingChallenge(...)`, so `key_binding`/`identity_assurance` are tamper-evident; the delegation key must equal the org-root key). New report fields `signature` (`green`/`red`/`none`), `firstSignatureViolation`, `keyBinding` (`device_bound`/`syncable`, surfaced verbatim — never rounded up). `conformanceProfile` now reaches **B** (only on a verified+linked signature — no over-claim) and **C** (qualified algs classified; QTSP-anchored crypto verification reserved as a future trust input, never a silent default). New exports `verifyDelegatorSignature` / `verifyDelegationTrustChain` / `orgRootBindingChallenge`. Additive, zero runtime dependencies.
