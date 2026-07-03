@@ -745,9 +745,12 @@ export interface ValIdentityAssurance {
 }
 
 /** Hardware binding of an enrolled key, bound into the org-root self-attestation so it is
- *  tamper-evident. `device_bound` = single secure element; `syncable` = account-bound /
- *  multi-device (weaker hardware assurance). Surfaced verbatim — never rounded up. */
-export type ValKeyBinding = 'device_bound' | 'syncable';
+ *  tamper-evident. `device_bound` = verified-attestation single secure element; `syncable` =
+ *  verified but account-bound / multi-device (weaker hardware assurance); `unattested` = the
+ *  producer obtained no verified hardware attestation at enrollment — the signature still
+ *  verifies, but the key's hardware provenance is the client's claim (a software authenticator
+ *  is possible). Surfaced verbatim — never rounded up. */
+export type ValKeyBinding = 'device_bound' | 'syncable' | 'unattested';
 
 /** A Profile B/C delegator signature carried in `delegator_authority.signature` (and in the
  *  org-root `self_signature`). `alg` selects the verification + profile: `webauthn` → Profile B
@@ -928,6 +931,7 @@ export interface QesVerdict {
 export type TrustChainOutcome =
   | 'authority_verified_org_root_device_bound'
   | 'authority_verified_org_root_syncable'
+  | 'authority_verified_org_root_unattested'
   | 'authority_verified_qualified'
   | 'signature_valid_only'
   | 'qualified_unverified'
@@ -965,7 +969,12 @@ export async function verifyDelegationTrustChain(
   }
   const notLinked = (reason: string) => ({ ...base, signatureValid: true, linkageVerified: false, outcome: 'signature_valid_only' as const, reason });
   if (!orgRoot) return notLinked('signature valid; no org-root attestation embedded');
-  if (!orgRoot.identity_assurance || (orgRoot.key_binding !== 'device_bound' && orgRoot.key_binding !== 'syncable')) {
+  if (
+    !orgRoot.identity_assurance ||
+    (orgRoot.key_binding !== 'device_bound' &&
+      orgRoot.key_binding !== 'syncable' &&
+      orgRoot.key_binding !== 'unattested')
+  ) {
     return notLinked('org-root attestation missing identity_assurance / key_binding');
   }
   const selfCheck = await verifyDelegatorSignature(orgRoot.self_signature, await orgRootBindingChallenge(orgRoot));
@@ -976,14 +985,25 @@ export async function verifyDelegationTrustChain(
   if (normKey(delegationSig.public_key) !== normKey(orgRoot.public_key)) {
     return notLinked('delegation signed by a key that is not the enrolled org-root key');
   }
-  const syncable = orgRoot.key_binding === 'syncable';
+  const binding = orgRoot.key_binding;
+  const bindingReason =
+    binding === 'device_bound'
+      ? 'device-bound (verified attestation)'
+      : binding === 'syncable'
+        ? 'syncable — weaker hardware assurance'
+        : 'unattested — hardware provenance claimed, not proven';
   return {
     signatureValid: true,
     linkageVerified: true,
-    outcome: syncable ? 'authority_verified_org_root_syncable' : 'authority_verified_org_root_device_bound',
-    keyBinding: orgRoot.key_binding,
+    outcome:
+      binding === 'device_bound'
+        ? 'authority_verified_org_root_device_bound'
+        : binding === 'syncable'
+          ? 'authority_verified_org_root_syncable'
+          : 'authority_verified_org_root_unattested',
+    keyBinding: binding,
     subjectAssurance: { source: orgRoot.identity_assurance.source, subject_claim: orgRoot.identity_assurance.subject_claim },
-    reason: `delegation key chains to the enrolled, self-attested org-root key (${syncable ? 'syncable — weaker hardware assurance' : 'device-bound'}); subject "${orgRoot.identity_assurance.subject_claim}" is ${orgRoot.identity_assurance.source}`,
+    reason: `delegation key chains to the enrolled, self-attested org-root key (${bindingReason}); subject "${orgRoot.identity_assurance.subject_claim}" is ${orgRoot.identity_assurance.source}`,
   };
 }
 
@@ -1658,7 +1678,9 @@ export async function verifyValChain(
       // profile (webauthn → B; qualified → C) and must verify + chain to the enrolled,
       // self-attested org-root key. conformanceProfile reflects the DECLARED profile; the
       // `signature` field reflects whether it VERIFIED. Both are read together (like
-      // integrity/lineage/...). device_bound vs syncable is surfaced verbatim, never rounded up.
+      // integrity/lineage/...). key_binding (device_bound / syncable / unattested) is the
+      // orthogonal hardware axis, surfaced verbatim, never rounded up — 'unattested' still
+      // earns B when the signature verifies + links (the letter grades the instrument).
       // 0.10.0: `dsigProfile` records what THIS block's signature classified — under the §5.2
       // per-lineage FLOOR model, a signed root's profile IS B/C, and the root classification
       // below must not also add A for it (harmless under the old max; wrong under floor).

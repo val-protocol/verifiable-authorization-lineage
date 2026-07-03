@@ -62,6 +62,21 @@ test('Profile B syncable: surfaced verbatim, never rounded to device_bound', asy
   assert.equal(r.keyBinding, 'syncable');
 });
 
+// §5.2 amendment 2026-07-02: 'unattested' = no verified hardware attestation at enrollment.
+// Still earns B on a verified+linked signature (the letter grades the instrument); the
+// binding is the orthogonal hardware axis, surfaced verbatim — never rounded up.
+test("Profile B unattested: verified+linked signature => conformance B, keyBinding 'unattested' verbatim", async () => {
+  const r = await verifyValChain(await mkRow(await makeSignedAssignment({ keyBinding: 'unattested' })));
+  assert.equal(r.conformanceProfile, 'B');
+  assert.equal(r.signature, 'green');
+  assert.equal(r.keyBinding, 'unattested');
+});
+
+test("relabel key_binding (unattested→device_bound) without re-signing org-root => signature red (tamper-evident)", async () => {
+  const r = await verifyValChain(await mkRow(await makeSignedAssignment({ keyBinding: 'unattested', relabelBinding: 'device_bound' })));
+  assert.equal(r.signature, 'red');
+});
+
 test('tampered delegation signature => signature red', async () => {
   const a = await makeSignedAssignment({});
   const buf = Buffer.from(a.human_attestation.delegator_authority.signature.signature, 'base64'); buf[10] ^= 0xff;
