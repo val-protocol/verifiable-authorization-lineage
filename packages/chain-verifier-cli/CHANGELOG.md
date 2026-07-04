@@ -1,5 +1,13 @@
 # @val-protocol/chain-verifier-cli — CHANGELOG
 
+## 0.4.0 — 2026-07-04
+
+- **Bump `@val-protocol/chain-verifier` `^0.9.0` → `^0.10.0`** (a 0.x caret cannot cross minors).
+  `val-verify` now reports the 0.10.0 surface: **floor** `conformanceProfile` (BEHAVIOR CHANGE for
+  mixed-profile chains — was the maximum), `profilesPresent`, `authorityCarriers`, and the honest
+  `key_binding` vocabulary incl. `unattested`. No CLI flag/output-format change beyond the richer
+  report fields.
+
 ## 0.3.0 — 2026-06-30
 
 - **Bump `@val-protocol/chain-verifier` `^0.7.0` → `^0.9.0`.** The published CLI was pinned to a verifier
