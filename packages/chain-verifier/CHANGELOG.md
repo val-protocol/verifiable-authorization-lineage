@@ -1,5 +1,31 @@
 # @val-protocol/chain-verifier — CHANGELOG
 
+## 0.10.0 — 2026-07-04 — floor conformance + carrier legibility + honest key_binding
+
+- **`conformanceProfile` is now the FLOOR** (weakest profile among the chain's root
+  ASSIGNMENTs) — **BEHAVIOR CHANGE for mixed-profile chains** (previously the maximum,
+  which let one qualified grant mask a chain of operator-attested ones). Consumers that
+  gated on `conformanceProfile === 'B'|'C'` may see chains report a LOWER profile than
+  under ≤ 0.9.x; read the new field below for the full picture. Also fixes the root
+  double-count where every human-rooted root added 'A' even when device/qualified-signed.
+- **`profilesPresent: ('A'|'B'|'C')[]`** (additive) — every profile observed across the
+  chain's lineages (spec §5.2 per-lineage model, §7.3).
+- **`authorityCarriers`** (additive) — every `delegator_authority` carrier surfaced
+  verbatim: `{ sequenceNumber, basis, capability, attested_by?, session_ref? }`. A report
+  answers "who attested entitlement?" without reading raw blocks. Verbatim, never a judgement.
+- **Reserved basis `ceremony_session_delegated`** (spec §7.2 Pass 5) — two policy-independent
+  chain-byte re-derivations: `scope_ref == scope.res.in_workspace`, and the carrier MUST
+  co-occur with a **qualified** delegator signature (account-less authority requires a
+  qualified instrument). Additive — fires only on a basis no prior chain emitted.
+- **`key_binding` gains `unattested`** (spec §5.2 amendment, ADR 0068) — `ValKeyBinding`
+  widens to `device_bound | syncable | unattested`; new outcome
+  `authority_verified_org_root_unattested`. An `unattested` binding (no verified hardware
+  attestation at enrollment) still earns Profile B on a verified+linked signature — the
+  letter grades the instrument; the binding is the orthogonal hardware axis, surfaced
+  verbatim, never rounded up. Additive for existing chains.
+- Tests: 59/59 (incl. the B+ cell lock — device-signed root × `identity_assurance.source
+  'eidas_eaa'` ⇒ B, source verbatim — and the unattested relabel-tamper case).
+
 ## 0.9.0 — 2026-06-30 — Profile C QES verdict seam (ADR 0063)
 
 - **Profile C (eIDAS QES) verdict-consumption seam — additive, default-preserving, still zero-dep.**

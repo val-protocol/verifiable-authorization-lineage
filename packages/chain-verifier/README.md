@@ -124,9 +124,15 @@ When the carrier ships a `delegator_authority.signature` (a WebAuthn assertion),
 ```ts
 const result = await verifyValChain(rows);
 // result.signature          → 'green' (verified + linked) | 'red' (present but invalid) | 'none'
-// result.keyBinding         → 'device_bound' | 'syncable' | null   ← surfaced verbatim
+// result.keyBinding         → 'device_bound' | 'syncable' | 'unattested' | null  ← surfaced verbatim
 // result.firstSignatureViolation → first failure, or null
-// result.conformanceProfile → 'A' | 'B' | 'C'  (highest established by the chain)
+// result.conformanceProfile → 'A' | 'B' | 'C'  — the FLOOR: the WEAKEST profile among the
+//                              chain's root ASSIGNMENTs (never rounded up; one qualified
+//                              grant cannot mask operator-attested ones)
+// result.profilesPresent    → ('A'|'B'|'C')[]  — every profile observed across lineages
+// result.authorityCarriers  → [{ sequenceNumber, basis, capability, attested_by?, session_ref? }]
+//                              — every delegator_authority carrier, verbatim (who attested
+//                              entitlement, without reading raw blocks)
 ```
 
 What the pass proves, from the chain bytes alone:
@@ -140,13 +146,21 @@ What the pass proves, from the chain bytes alone:
   (e.g. `device_bound` → `syncable`) or `identity_assurance` breaks the self-signature ⇒
   `signature: 'red'`. A signature by any other key ⇒ `signature: 'red'` (linkage failure).
 - `keyBinding` is reported **verbatim** — `syncable` (iCloud-synced passkey) is never rounded up
-  to `device_bound`. A verifying party decides for itself whether a synced key meets its bar.
+  to `device_bound`, and `unattested` (no verified hardware attestation at enrollment — the
+  provenance is the enrollee's claim) is never rounded up to either. A verifying party decides
+  for itself whether a synced or unattested key meets its bar. An `unattested` binding still
+  earns Profile B on a verified + linked signature: the letter grades the instrument; the
+  binding is the orthogonal hardware axis.
 
-`conformanceProfile` reaches **B only on a verified + linked signature** (a present-but-invalid
-signature claims no profile and is flagged `signature: 'red'` — no over-claim). It reaches **C**
-when a qualified algorithm (`qes` / `eidas_qes` / `eidas_eaa`) is declared; Profile C is
-**classified, not yet crypto-verified** — its QTSP trust-list anchor is a future input, never a
-silent default, so a C signature reports `signature: 'none'` until that anchor exists.
+A lineage reaches **B only on a verified + linked signature** (a present-but-invalid
+signature claims no profile and is flagged `signature: 'red'` — no over-claim). It reaches **C
+verified** when the caller supplies a QES validation verdict via
+`options.qesValidation: { reports }` (produced offline by the separate
+`@val-protocol/qes-validator` against the EU Trusted List — outcome
+`authority_verified_qualified`); with a qualified algorithm declared but **no verdict
+supplied**, the lineage is classified `qualified_unverified` — never silently upgraded. The
+chain-level `conformanceProfile` is the **floor** across all root ASSIGNMENTs; read
+`profilesPresent` for the full per-lineage picture.
 
 Known limitation: the signature's WebAuthn challenge is not yet bound offline to a specific grant
 payload (a future strengthening); the device_bound/syncable org-root verdict does not depend on it.

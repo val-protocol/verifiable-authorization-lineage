@@ -107,12 +107,12 @@ test('relabel key_binding (device_bound→syncable) without re-signing org-root 
 test("B+ cell: device-signed root with identity_assurance.source='eidas_eaa' => conformance B, eID source surfaced verbatim", async () => {
   const r = await verifyValChain(await mkRow(await makeSignedAssignment({
     keyBinding: 'device_bound',
-    identityAssurance: { source: 'eidas_eaa', subject_claim: 'Jean Dupont' },
+    identityAssurance: { source: 'eidas_eaa', subject_claim: 'John Doe' },
   })));
   assert.equal(r.conformanceProfile, 'B'); // instrument axis: still a device signature — not C
   assert.deepEqual(r.profilesPresent, ['B']);
   assert.equal(r.signature, 'green');
-  assert.deepEqual(r.rootSubject, { subject_claim: 'Jean Dupont', source: 'eidas_eaa' }); // eID axis: verbatim
+  assert.deepEqual(r.rootSubject, { subject_claim: 'John Doe', source: 'eidas_eaa' }); // eID axis: verbatim
 });
 
 test('Profile C (qualified alg) => conformance C, classified but not crypto-verified', async () => {
