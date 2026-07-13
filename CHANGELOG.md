@@ -2,6 +2,10 @@
 
 All notable changes to the VAL reference packages (`@val-protocol/*`) are documented here. Packages follow [semantic versioning](https://semver.org/); the specification is versioned independently (currently draft v0.1).
 
+## [0.11.0] — 2026-07-13
+
+- **`@val-protocol/chain-verifier` 0.11.0** — personal-scope self-attestation (additive, §5.2 twin): `ValPersonalAttestation` + `personalBindingChallenge` + `verifyPersonalAttestation` — the org-free twin of the org-root self-attestation for a natural person's §4.3 CONSENT key (identical challenge construction minus `org_id`; consent is a personal act, no organization in the signed statement). No pass-pipeline change: the CONSENT per-action signature pass already verifies trustlessly against the embedded key; a personal-key CONSENT grades **B** via `signature.alg` with the self-asserted identity as the honest residual. Offline primitive for producers recording personal attestations (RIGA ADR 0075).
+
 ## [0.10.0] — 2026-07-04
 
 - **`@val-protocol/chain-verifier` 0.10.0** — implements the 2026-07-01 spec amendments (report legibility, one release):

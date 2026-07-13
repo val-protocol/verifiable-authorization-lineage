@@ -779,6 +779,20 @@ export interface ValOrgRootAttestation {
   self_signature: ValDelegatorSignature;
 }
 
+/** The PERSONAL-scope twin of {@link ValOrgRootAttestation} (§5.2, spec change 0.11.0) —
+ *  a natural person's org-free CONSENT key self-attesting
+ *  {subject-hash, key, assurance, key_binding}. No org_id: a §4.3 CONSENT is a personal
+ *  act, so no organization appears in the signed statement. The self_signature signs
+ *  `personalBindingChallenge(...)`, re-derivable from these fields — relabeling
+ *  `key_binding` or `identity_assurance` breaks it. */
+export interface ValPersonalAttestation {
+  signatory_identity_hash: string;
+  public_key: string; // SPKI base64 — the enrolled personal key
+  identity_assurance: ValIdentityAssurance;
+  key_binding: ValKeyBinding;
+  self_signature: ValDelegatorSignature;
+}
+
 /**
  * Delegator-authority carrier on an ASSIGNMENT's human_attestation (§5.2 / Pass 5).
  * Records the authority basis under which the attesting human could grant the delegated
@@ -853,6 +867,61 @@ export async function orgRootBindingChallenge(o: ValOrgRootAttestation): Promise
       ),
     ),
   );
+}
+
+/** The challenge a PERSONAL self-attestation signs (§5.2, 0.11.0) — the org-free twin of
+ *  {@link orgRootBindingChallenge}: identical construction minus `org_id`. Re-derivable by
+ *  any verifier from the attestation fields, so `key_binding` / the self-declared subject
+ *  cannot be relabeled without breaking the self-signature. */
+export async function personalBindingChallenge(p: ValPersonalAttestation): Promise<string> {
+  return bytesToB64url(
+    await sha256(
+      utf8(
+        jcs({
+          identity_assurance: {
+            source: p.identity_assurance.source,
+            subject_claim: p.identity_assurance.subject_claim,
+          },
+          key_binding: p.key_binding,
+          public_key: p.public_key,
+          signatory_identity_hash: p.signatory_identity_hash,
+        }),
+      ),
+    ),
+  );
+}
+
+/** Verify a PERSONAL self-attestation offline: the attestation must be SELF-signed (the
+ *  attesting key IS the attested key) over its own re-derived binding challenge. Returns
+ *  the honest verdict — never rounds `key_binding` or the assurance source up. Consumers
+ *  cross-check `attestation.public_key` against a CONSENT block's embedded signature key
+ *  to attribute the bond to the attested subject (a claim RIGA witnessed, never vouched). */
+export async function verifyPersonalAttestation(
+  attestation: ValPersonalAttestation,
+): Promise<{ valid: boolean; reason: string }> {
+  if (!attestation?.identity_assurance) {
+    return { valid: false, reason: 'personal attestation carries no identity_assurance' };
+  }
+  if (
+    attestation.key_binding !== 'device_bound' &&
+    attestation.key_binding !== 'syncable' &&
+    attestation.key_binding !== 'unattested'
+  ) {
+    return { valid: false, reason: 'personal attestation carries no/invalid key_binding' };
+  }
+  if (attestation.self_signature?.alg !== 'webauthn') {
+    return { valid: false, reason: 'personal attestation requires a WebAuthn self-signature' };
+  }
+  if (normKey(attestation.self_signature.public_key) !== normKey(attestation.public_key)) {
+    return { valid: false, reason: 'personal attestation is not self-signed (attesting key != attested key)' };
+  }
+  const check = await verifyDelegatorSignature(
+    attestation.self_signature,
+    await personalBindingChallenge(attestation),
+  );
+  return check.valid
+    ? { valid: true, reason: 'personal self-attestation valid (self-signed binding challenge)' }
+    : { valid: false, reason: `personal self-attestation invalid: ${check.reason}` };
 }
 
 /** Verify a WebAuthn (ES256) delegator assertion against its embedded public key. When

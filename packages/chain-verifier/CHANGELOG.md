@@ -1,5 +1,22 @@
 # @val-protocol/chain-verifier — CHANGELOG
 
+## 0.11.0 — 2026-07-13 — personal-scope self-attestation (§5.2 twin, additive)
+
+- **`ValPersonalAttestation` + `personalBindingChallenge` + `verifyPersonalAttestation`**
+  (additive) — the PERSONAL-scope twin of the org-root self-attestation: a natural
+  person's org-free §4.3 CONSENT key self-attests
+  `{signatory_identity_hash, public_key, identity_assurance, key_binding}` — identical
+  construction to `orgRootBindingChallenge` minus `org_id` (a consent is a personal act;
+  no organization appears in the signed statement). `verifyPersonalAttestation` checks the
+  self-signature offline (self-signed: attesting key == attested key) and surfaces
+  `key_binding` + the self-asserted subject verbatim — never rounded up.
+- **No pass-pipeline change.** The §4.3 CONSENT per-action signature pass already verifies
+  trustlessly against the embedded key with no org linkage; a CONSENT signed by a personal
+  key verifies green and grades **B** via `signature.alg` — the self-asserted identity is
+  the honest residual. These exports are the offline primitive for producers that record
+  personal attestations (e.g. RIGA ADR 0075); a report-surface integration lands when a
+  producer embeds them in exports.
+
 ## 0.10.0 — 2026-07-04 — floor conformance + carrier legibility + honest key_binding
 
 - **`conformanceProfile` is now the FLOOR** (weakest profile among the chain's root
