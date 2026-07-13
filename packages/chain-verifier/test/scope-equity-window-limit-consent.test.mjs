@@ -244,3 +244,62 @@ test('CONSENT: block carries no per-action signature => signature red', async ()
   assert.equal(r.signature, 'red');
   assert.match(r.firstSignatureViolation.reason, /no per-action signature/);
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 6) 0.11.0 — consentBonds itemization + qualified-consent classification.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('CONSENT (0.11.0): webauthn bond itemized in consentBonds — profile B, signatureValid, chain floor stays A', async () => {
+  const k = newKey();
+  const a = await mkRow(1, null, 'assign', consentParent());
+  const principal = 'user:u-1';
+  const document_hash = 'doc-abc';
+  const consent = {
+    v: 1, block_type: 'CONSENT', parent_assignment_hash: a.chain_hash, action: 'sign',
+    principal, document_hash, resource: { content_hash: 'doc-abc', resource_id: 'r', in_workspace: 'w' },
+    signature: signAssertion(consentChallenge(document_hash, a.chain_hash, principal), k.privateKey, k.publicKey),
+  };
+  const b = await mkRow(2, a.chain_hash, 'consent', consent);
+  const r = await verifyValChain([a, b]);
+  assert.equal(r.signature, 'green');
+  assert.equal(r.consentBonds.length, 1);
+  assert.deepEqual(r.consentBonds[0], { sequenceNumber: '2', alg: 'webauthn', profile: 'B', signatureValid: true });
+  // The bond's instrument grade is SEPARATE from the chain's root profile: an A-rooted
+  // chain carrying a webauthn bond reports floor 'A' AND a B-graded bond — never rounded.
+  assert.equal(r.conformanceProfile, 'A');
+  assert.deepEqual(r.profilesPresent, ['A']);
+});
+
+test('CONSENT (0.11.0): qualified alg WITHOUT a verdict => classified C, not verified, never red', async () => {
+  const a = await mkRow(1, null, 'assign', consentParent());
+  const consent = {
+    v: 1, block_type: 'CONSENT', parent_assignment_hash: a.chain_hash, action: 'sign',
+    principal: 'user:u-1', document_hash: 'doc-abc',
+    resource: { content_hash: 'doc-abc', resource_id: 'r', in_workspace: 'w' },
+    signature: { alg: 'qes', signature: 'q'.repeat(64) },
+  };
+  const b = await mkRow(2, a.chain_hash, 'consent', consent);
+  const r = await verifyValChain([a, b]);
+  // Pre-0.11.0 this went red ('unsupported alg'); a spec-valid Profile-C bond must not fail
+  // the report on verdict ABSENCE — classified, not verified (same discipline as delegations).
+  assert.equal(r.signature, 'none');
+  assert.equal(r.firstSignatureViolation, null);
+  assert.equal(r.consentBonds.length, 1);
+  assert.deepEqual(r.consentBonds[0], { sequenceNumber: '2', alg: 'qes', profile: 'C', signatureValid: false });
+});
+
+test('CONSENT (0.11.0): qualified alg WITH a matching per-signature verdict => verified, signature green', async () => {
+  const a = await mkRow(1, null, 'assign', consentParent());
+  const sigB64 = 'r'.repeat(64);
+  const consent = {
+    v: 1, block_type: 'CONSENT', parent_assignment_hash: a.chain_hash, action: 'sign',
+    principal: 'user:u-1', document_hash: 'doc-abc',
+    resource: { content_hash: 'doc-abc', resource_id: 'r', in_workspace: 'w' },
+    signature: { alg: 'qes', signature: sigB64 },
+  };
+  const b = await mkRow(2, a.chain_hash, 'consent', consent);
+  const signatureRef = createHash('sha256').update(Buffer.from(sigB64, 'utf8')).digest('hex');
+  const r = await verifyValChain([a, b], { qesValidation: { reports: [{ qualified: true, signatureRef }] } });
+  assert.equal(r.signature, 'green');
+  assert.deepEqual(r.consentBonds[0], { sequenceNumber: '2', alg: 'qes', profile: 'C', signatureValid: true });
+});

@@ -1184,6 +1184,21 @@ export interface ValVerificationResult {
     session_ref?: string | null;
   }>;
   /**
+   * 0.11.0 — every §4.3 CONSENT bond itemized: the per-bond INSTRUMENT grade, legible from the
+   * report alone. `profile` grades the instrument by `signature.alg` (§5.2: qualified alg ⇒ 'C',
+   * webauthn ⇒ 'B', absent/unknown ⇒ 'unknown' — a CONSENT is never signatureless by spec, so
+   * 'unknown' co-occurs with a signature violation). DISTINCT from `conformanceProfile` /
+   * `profilesPresent`, which grade the chain's ASSIGNMENT roots (per-lineage §5.2 property):
+   * a webauthn consent bond on an operator-attested chain reports chain floor 'A' AND a
+   * consent bond graded 'B' — both true, surfaced separately, never rounded either way.
+   */
+  consentBonds: Array<{
+    sequenceNumber: string;
+    alg: string | null;
+    profile: 'B' | 'C' | 'unknown';
+    signatureValid: boolean;
+  }>;
+  /**
    * 0.6.0 — the root human's DECLARED identity, read from the root ASSIGNMENT's
    * `human_attestation.identity_assurance` ({ subject_claim, source }). This is the name the lineage
    * roots in (hash-bound in canonical_details; the verifier re-derives integrity over those bytes).
@@ -1396,6 +1411,7 @@ export async function verifyValChain(
     conformanceProfile: 'unknown',
     profilesPresent: [],
     authorityCarriers: [],
+    consentBonds: [],
     rootSubject: null,
     firstLineageViolation: null,
     firstScopeViolation: null,
@@ -1569,6 +1585,35 @@ export async function verifyValChain(
           if (!result.firstSignatureViolation) {
             result.firstSignatureViolation = { sequenceNumber: seqStr, reason: 'CONSENT block carries no per-action signature' };
           }
+          result.consentBonds.push({ sequenceNumber: seqStr, alg: null, profile: 'unknown', signatureValid: false });
+        } else if (QUALIFIED_ALGS.has(sig.alg)) {
+          // 0.11.0 — a QUALIFIED consent signature follows the SAME discipline as qualified
+          // delegations (ADR 0063): its ETSI/eIDAS crypto verification is produced caller-side
+          // (@val-protocol/qes-validator) and supplied as a per-signature verdict via
+          // options.qesValidation. With a matching `qualified: true` verdict ⇒ verified (green);
+          // without one ⇒ CLASSIFIED, not verified (signature pass untouched — never red on
+          // absence, never green on declaration). Pre-0.11.0 these went red as 'unsupported alg'
+          // — a spec-valid Profile-C bond failed the report. The payload binding travels with the
+          // verdict (the validator checked the signature over the canonical consent bytes), like
+          // the delegation path.
+          let qesVerdict: QesVerdict | null = null;
+          const reports = options?.qesValidation?.reports;
+          if (reports && reports.length) {
+            const thisRef = bytesToHex(await sha256(new TextEncoder().encode(sig.signature)));
+            const keyed = reports.find((r) => r.signatureRef === thisRef);
+            if (keyed) {
+              qesVerdict = keyed; // exact per-signature verdict — authoritative
+            } else if (reports.some((r) => r.signatureRef != null)) {
+              qesVerdict = null; // keyed reports, none for THIS signature ⇒ classified, not verified
+            } else {
+              qesVerdict = reports.find((r) => r.qualified === true) ?? null; // legacy unkeyed fallback
+            }
+          }
+          const qualified = qesVerdict?.qualified === true;
+          if (qualified) {
+            if (result.signature === 'none') result.signature = 'green';
+          }
+          result.consentBonds.push({ sequenceNumber: seqStr, alg: sig.alg, profile: 'C', signatureValid: qualified });
         } else {
           const challenge = bytesToB64url(
             await sha256(
@@ -1590,6 +1635,12 @@ export async function verifyValChain(
               result.firstSignatureViolation = { sequenceNumber: seqStr, reason: `CONSENT per-action signature invalid: ${v.reason}` };
             }
           }
+          result.consentBonds.push({
+            sequenceNumber: seqStr,
+            alg: sig.alg ?? null,
+            profile: sig.alg === 'webauthn' ? 'B' : 'unknown',
+            signatureValid: v.valid,
+          });
         }
       }
 

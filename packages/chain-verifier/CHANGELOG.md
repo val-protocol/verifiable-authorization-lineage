@@ -10,12 +10,24 @@
   no organization appears in the signed statement). `verifyPersonalAttestation` checks the
   self-signature offline (self-signed: attesting key == attested key) and surfaces
   `key_binding` + the self-asserted subject verbatim — never rounded up.
-- **No pass-pipeline change.** The §4.3 CONSENT per-action signature pass already verifies
-  trustlessly against the embedded key with no org linkage; a CONSENT signed by a personal
-  key verifies green and grades **B** via `signature.alg` — the self-asserted identity is
-  the honest residual. These exports are the offline primitive for producers that record
-  personal attestations (e.g. RIGA ADR 0075); a report-surface integration lands when a
-  producer embeds them in exports.
+- **`consentBonds` report itemization** (additive) — every §4.3 CONSENT bond surfaced as
+  `{ sequenceNumber, alg, profile, signatureValid }`: the per-bond INSTRUMENT grade
+  (webauthn ⇒ 'B', qualified alg ⇒ 'C'), legible from the report alone. DISTINCT from
+  `conformanceProfile`/`profilesPresent` (which grade ASSIGNMENT roots, §5.2 per-lineage):
+  an A-rooted chain carrying a webauthn bond reports floor 'A' AND a B-graded bond — both
+  true, never rounded either way. (Follows the 0.10.0 `authorityCarriers` verbatim-surface
+  precedent.)
+- **Qualified CONSENT signatures follow the delegation discipline** (fix) — pre-0.11.0 the
+  CONSENT pass fed every signature to the WebAuthn verifier, so a spec-valid Profile-C bond
+  went `signature: red` ("unsupported alg"). Now: with a matching per-signature
+  `qesValidation` verdict ⇒ verified (green); without ⇒ CLASSIFIED, not verified (pass
+  untouched — never red on verdict absence, never green on declaration). Same
+  per-signature `signatureRef` matching as qualified delegations (ADR 0063 item 5).
+- The CONSENT per-action pass otherwise stays as-is: a personal-key (org-free) webauthn
+  CONSENT verifies trustlessly against the embedded key and its bond grades **B** — the
+  self-asserted identity is the honest residual. The attestation exports are the offline
+  primitive for producers that record personal attestations (e.g. RIGA ADR 0075).
+- Tests: 62/62 (adds bond itemization, qualified-consent classification + verified paths).
 
 ## 0.10.0 — 2026-07-04 — floor conformance + carrier legibility + honest key_binding
 

@@ -4,7 +4,10 @@ All notable changes to the VAL reference packages (`@val-protocol/*`) are docume
 
 ## [0.11.0] — 2026-07-13
 
-- **`@val-protocol/chain-verifier` 0.11.0** — personal-scope self-attestation (additive, §5.2 twin): `ValPersonalAttestation` + `personalBindingChallenge` + `verifyPersonalAttestation` — the org-free twin of the org-root self-attestation for a natural person's §4.3 CONSENT key (identical challenge construction minus `org_id`; consent is a personal act, no organization in the signed statement). No pass-pipeline change: the CONSENT per-action signature pass already verifies trustlessly against the embedded key; a personal-key CONSENT grades **B** via `signature.alg` with the self-asserted identity as the honest residual. Offline primitive for producers recording personal attestations (RIGA ADR 0075).
+- **`@val-protocol/chain-verifier` 0.11.0** — personal-scope self-attestation + consent-bond legibility:
+  - `ValPersonalAttestation` + `personalBindingChallenge` + `verifyPersonalAttestation` (additive, §5.2 twin) — the org-free twin of the org-root self-attestation for a natural person's §4.3 CONSENT key (identical challenge construction minus `org_id`; consent is a personal act, no organization in the signed statement). Offline primitive for producers recording personal attestations (RIGA ADR 0075).
+  - **`consentBonds`** (additive) — every §4.3 CONSENT bond itemized `{ sequenceNumber, alg, profile, signatureValid }`: the per-bond instrument grade (webauthn ⇒ 'B', qualified ⇒ 'C'), distinct from the root-graded `conformanceProfile`/`profilesPresent` — an A-rooted chain with a webauthn bond reports floor 'A' AND a B bond, never rounded either way.
+  - **Qualified CONSENT fix** — a Profile-C consent signature no longer goes red as "unsupported alg": with a matching per-signature `qesValidation` verdict ⇒ verified (green); without ⇒ classified, not verified (same discipline as qualified delegations, ADR 0063 item 5).
 
 ## [0.10.0] — 2026-07-04
 
