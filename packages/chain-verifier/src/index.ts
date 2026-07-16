@@ -1488,7 +1488,10 @@ export async function verifyValChain(
         }
         continue;
       }
-      if (walk.profile === 'A') profiles.add('A');
+      // 0.11.1: the walk contributes NO profile — the walked-to root is a chain block classified
+      // in its OWN ASSIGNMENT iteration (signed → B/C, unsigned/failed → A). Adding 'A' here for
+      // every successful action walk dragged a cleanly B/C-rooted chain to floor 'A' and stamped a
+      // phantom 'A' into profilesPresent (same double-count the 0.10.0 sub-ASSIGNMENT note fixed).
 
       // ── Pass 3 — scope (effective = satisfy every ASSIGNMENT scope on the path) ──
       // §6.7 effective scope: evaluate the action against EVERY ancestor scope (direct parent → root)

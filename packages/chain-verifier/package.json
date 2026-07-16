@@ -1,6 +1,6 @@
 {
   "name": "@val-protocol/chain-verifier",
-  "version": "0.11.0",
+  "version": "0.11.1",
   "description": "Reference offline verifier for Verifiable Authorization Lineage (VAL). Zero runtime dependencies — pure SHA-256 against the canonical preimage specified in the VAL wire format. Verify chain integrity, lineage, scope, grounding, and delegator authority client-side without trusting the operator.",
   "license": "Apache-2.0",
   "author": "RIGA <hello@riga.solutions>",
@@ -47,7 +47,6 @@
     "test": "node --test",
     "prepublishOnly": "node ../../scripts/verify-example-ids.mjs && npm run build && ../../scripts/verify-esm-extensions.sh"
   },
-  "dependencies": {},
   "devDependencies": {
     "typescript": "^5.0.0"
   },

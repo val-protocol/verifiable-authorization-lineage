@@ -152,3 +152,58 @@ test('0.6.0 rootSubject => null when the root carries no identity_assurance (pre
   const r = await verifyValChain(await mkRow(a));
   assert.equal(r.rootSubject, null);
 });
+
+// ── 0.11.1 regression — the FLOOR reflects root classification only. An action block's lineage
+// walk contributes NO profile: the walked-to root is a chain block classified in its own
+// iteration (signed → B/C). Pre-0.11.1, every successful action walk added a phantom 'A',
+// dragging a cleanly B-rooted chain to floor 'A' and stamping 'A' into profilesPresent. ──
+async function mkChain(bodies) {
+  const rows = [];
+  let prev = null;
+  for (let i = 0; i < bodies.length; i += 1) {
+    const canonical_details = JSON.stringify(bodies[i].body);
+    const chain_hash = await reconstructChainHash({
+      scopeKey: SCOPE, sequenceNumber: i + 1, eventType: bodies[i].event, canonicalDetails: canonical_details, previousHash: prev,
+    });
+    rows.push({ scope_key: SCOPE, sequence_number: i + 1, event_type: bodies[i].event, canonical_details, previous_hash: prev, chain_hash });
+    prev = chain_hash;
+  }
+  return rows;
+}
+
+test('0.11.1 regression: B-rooted chain WITH an in-scope action stays floor B (no phantom A from the walk)', async () => {
+  const a = await makeSignedAssignment({ keyBinding: 'device_bound' });
+  const rows = await mkChain([{ event: 'assign', body: a }]);
+  const access = {
+    v: 1, block_type: 'ACCESS', parent_assignment_hash: rows[0].chain_hash,
+    action: 'read', principal: 'agent:probe', resource: { resource_id: 'doc-1', in_workspace: 'w' },
+  };
+  const full = await mkChain([{ event: 'assign', body: a }, { event: 'read', body: access }]);
+  const r = await verifyValChain(full);
+  assert.equal(r.integrity, 'green');
+  assert.equal(r.lineage, 'green');
+  assert.equal(r.scope, 'green');
+  assert.equal(r.signature, 'green');
+  assert.equal(r.conformanceProfile, 'B'); // pre-0.11.1: 'A'
+  assert.deepEqual(r.profilesPresent, ['B']); // pre-0.11.1: ['A','B'] — no A root exists in this chain
+});
+
+test('0.11.1: a genuinely mixed chain (unsigned root beside a signed root, plus an action) still floors at A', async () => {
+  const signed = await makeSignedAssignment({ keyBinding: 'device_bound' });
+  const unsigned = await makeSignedAssignment({});
+  delete unsigned.human_attestation.delegator_authority.signature;
+  delete unsigned.human_attestation.delegator_authority.org_root;
+  const partial = await mkChain([{ event: 'assign', body: signed }, { event: 'assign', body: unsigned }]);
+  const access = {
+    v: 1, block_type: 'ACCESS', parent_assignment_hash: partial[0].chain_hash,
+    action: 'read', principal: 'agent:probe', resource: { resource_id: 'doc-1', in_workspace: 'w' },
+  };
+  const full = await mkChain([
+    { event: 'assign', body: signed },
+    { event: 'assign', body: unsigned },
+    { event: 'read', body: access },
+  ]);
+  const r = await verifyValChain(full);
+  assert.equal(r.conformanceProfile, 'A'); // the unsigned ROOT floors it — not the action walk
+  assert.deepEqual(r.profilesPresent, ['A', 'B']);
+});

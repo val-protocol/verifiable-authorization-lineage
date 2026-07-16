@@ -1,5 +1,18 @@
 # @val-protocol/chain-verifier — CHANGELOG
 
+## 0.11.1 — 2026-07-16 — floor fix: no phantom 'A' from action-block lineage walks
+
+- **BUG FIX (report correctness, no API change).** Since the 0.10.0 floor model, every successful
+  action-block lineage walk added `'A'` to the profile set — a leftover from the pre-floor maximum
+  model, where the extra add was harmless. Under the floor it dragged a cleanly B/C-rooted chain
+  with ANY action block down to `conformanceProfile: 'A'` and stamped a phantom `'A'` into
+  `profilesPresent` (no A root exists in such a chain). Roots classify themselves in their own
+  ASSIGNMENT iteration (signed → B/C; unsigned or failed-signature → A); the walk now contributes
+  no profile — the same double-count discipline 0.10.0 applied to sub-ASSIGNMENT walks. Chains
+  whose floor was genuinely A (any unsigned root) are unaffected. Regression-locked in
+  `test/profile-b-signature.test.mjs` (B root + in-scope ACCESS ⇒ floor B, `profilesPresent: ['B']`;
+  mixed unsigned+signed roots + action ⇒ still floor A).
+
 ## 0.11.0 — 2026-07-13 — personal-scope self-attestation (§5.2 twin, additive)
 
 - **`ValPersonalAttestation` + `personalBindingChallenge` + `verifyPersonalAttestation`**
