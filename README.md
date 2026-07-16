@@ -84,6 +84,10 @@ The reference packages live under [`packages/`](packages/) (Apache-2.0, publishe
 | Package | Purpose |
 |---|---|
 | [`chain-verifier`](packages/chain-verifier) | the offline verifier — zero runtime dependencies, pure SHA-256 against the canonical preimage; implements passes 1–3 (integrity, lineage, scope) plus the grounding re-derivation, pass 5 (delegator authority, §7.2), and pass 6 (bytes-binding, §7.2 — optional, evidence-time), and reporting conformance profile A / B / C (Profile B device-key signature fully verified; C classified, QTSP verification pending) |
+| [`chain-verifier-cli`](packages/chain-verifier-cli) | `val-verify` — one-command verification of an exported chain (file or live MCP `audit.export`), and `--html`: a single-file, **self-verifying HTML report** that embeds the chain bytes + the verifier source and re-derives every pass in the reader's browser, offline |
+| [`demo`](packages/demo) | `npx @val-protocol/demo` — mints a live Profile-B chain in your terminal, verifies it, then attacks it four ways (edit / full rewrite / signature strip / silent truncation), showing what each attack breaks and what it can only demote |
+| [`qes-validator`](packages/qes-validator) | caller-side, pure-JS eIDAS QES validator for Profile C — produces the §7.1(f) validation verdicts the zero-dep core consumes |
+| [`anchor-lotl-resolver`](packages/anchor-lotl-resolver) | caller-side EU Trusted List (LOTL) resolution for qualified external anchors — resolves the `anchorTrust` input (§7.1(c)) |
 | [`webhook-receiver`](packages/webhook-receiver) | reference receiver for signed chain-event webhooks — HMAC verification, rotation grace, replay protection, chain-link extraction. Delivery transport tooling (transport is §1.2 out-of-scope for the normative protocol) |
 
 The verifier is transport- and producer-agnostic: it consumes exported chain bytes and re-derives the protocol's properties without contacting any operator. Chain producers and API clients are deployment-specific and live with each operator's stack, not in this protocol repository.
