@@ -1,7 +1,7 @@
 # @val-protocol/qes-validator
 
 **Not published.** Caller-side, **no-DSS, pure-JS** eIDAS **QES** (Qualified Electronic Signature)
-validator for VAL **Profile C**. See **ADR 0063**.
+validator for VAL **Profile C**. See spec §7.1(f) and §5.2 Profile C.
 
 `anchoring proves time; Profile C proves identity.` This package validates the qualified signature at the
 **root** of a VAL lineage — proving the human delegator is a **legally identified natural person** (eIDAS
@@ -62,7 +62,7 @@ import { validateQes } from '@val-protocol/qes-validator';
 const report = await validateQes({
   signedCanonical,                 // the root ASSIGNMENT canonical bytes the QES was computed over
   signature,                       // ValQesSignature { alg, signature } (detached JAdES)
-  validationTime: anchorGenTime,   // ADR 0062 anchor time for at-signing-time determination
+  validationTime: anchorGenTime,   // §8.4 anchor genTime anchor time for at-signing-time determination
   trust: { tslXml, trustAnchorsDer }, // or { fetchLive: true } to pull the EU LOTL live
 });
 const result = await verifyValChain(rows, { qesValidation: { reports: [report] } });

@@ -1,5 +1,11 @@
 # @val-protocol/chain-verifier — CHANGELOG
 
+## 0.11.2 — 2026-07-16 — internal-reference normalization (docs/comments only)
+
+- Repository-internal decision-record numbers in source comments, tests, and CHANGELOG
+  entries are replaced with their public spec anchors (§7.2 Pass 6, §7.1(f), §8.4, §5.2).
+  No functional change, no API change — byte-identical verification behavior to 0.11.1.
+
 ## 0.11.1 — 2026-07-16 — floor fix: no phantom 'A' from action-block lineage walks
 
 - **BUG FIX (report correctness, no API change).** Since the 0.10.0 floor model, every successful
@@ -35,11 +41,11 @@
   went `signature: red` ("unsupported alg"). Now: with a matching per-signature
   `qesValidation` verdict ⇒ verified (green); without ⇒ CLASSIFIED, not verified (pass
   untouched — never red on verdict absence, never green on declaration). Same
-  per-signature `signatureRef` matching as qualified delegations (ADR 0063 item 5).
+  per-signature `signatureRef` matching as qualified delegations (§7.1(f) per-signature matching).
 - The CONSENT per-action pass otherwise stays as-is: a personal-key (org-free) webauthn
   CONSENT verifies trustlessly against the embedded key and its bond grades **B** — the
   self-asserted identity is the honest residual. The attestation exports are the offline
-  primitive for producers that record personal attestations (e.g. RIGA ADR 0075).
+  primitive for producers that record personal attestations (spec §5.2).
 - Tests: 62/62 (adds bond itemization, qualified-consent classification + verified paths).
 
 ## 0.10.0 — 2026-07-04 — floor conformance + carrier legibility + honest key_binding
@@ -59,7 +65,7 @@
   chain-byte re-derivations: `scope_ref == scope.res.in_workspace`, and the carrier MUST
   co-occur with a **qualified** delegator signature (account-less authority requires a
   qualified instrument). Additive — fires only on a basis no prior chain emitted.
-- **`key_binding` gains `unattested`** (spec §5.2 amendment, ADR 0068) — `ValKeyBinding`
+- **`key_binding` gains `unattested`** (spec §5.2 amendment 2026-07-02) — `ValKeyBinding`
   widens to `device_bound | syncable | unattested`; new outcome
   `authority_verified_org_root_unattested`. An `unattested` binding (no verified hardware
   attestation at enrollment) still earns Profile B on a verified+linked signature — the
@@ -68,7 +74,7 @@
 - Tests: 59/59 (incl. the B+ cell lock — device-signed root × `identity_assurance.source
   'eidas_eaa'` ⇒ B, source verbatim — and the unattested relabel-tamper case).
 
-## 0.9.0 — 2026-06-30 — Profile C QES verdict seam (ADR 0063)
+## 0.9.0 — 2026-06-30 — Profile C QES verdict seam (§7.1(f))
 
 - **Profile C (eIDAS QES) verdict-consumption seam — additive, default-preserving, still zero-dep.**
   `verifyValChain` gains `options.qesValidation?: { reports: QesVerdict[] }`; `verifyDelegationTrustChain`
@@ -81,7 +87,7 @@
   Tests: `profile-c-qes.test.mjs` (default classified / verified / false-verdict-not-upgraded), suite 54/54.
   The companion `@val-protocol/qes-validator` (0.1.0) ships alongside this release — implemented **pure-JS,
   no DSS** (auto-routes CAdES/JAdES, binds `messageDigest == H(canonical)`, resolves trust against the live
-  EU LOTL), superseding ADR 0063 S1's "wrap EU DSS" for the BYO arm. The BYO Profile-C path (signer brings
+  EU LOTL), superseding §7.1(f) S1's "wrap EU DSS" for the BYO arm. The BYO Profile-C path (signer brings
   a CAdES/JAdES, RIGA verifies + mints on bind) is live and end-to-end proven (REST + dev-console UI).
 
 ## 0.8.0 — 2026-06-27
@@ -122,7 +128,7 @@
 
 ### Features
 
-- **Pass 6 — bytes-binding (ADR 0061).** A second rail binding a chain content-address to the literal
+- **Pass 6 — bytes-binding (§7.2 Pass 6).** A second rail binding a chain content-address to the literal
   document bytes, re-derivable offline with zero operator trust. `verifyValChain` gains an optional
   `bytesDisclosures` input — `[{ resourceId, documentBytesBase64, nonceHex }]` — and a
   `bytesBinding ∈ { bound, mismatch, not_evaluated }` result (+ `firstBytesBindingViolation`). For each

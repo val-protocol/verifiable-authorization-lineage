@@ -47,7 +47,7 @@ member-state TSL XML yourself.
   MAY substitute a full XML/XAdES validator.
 - **Out of scope (documented):** validating the **LOTL/TSL's own qualified signature** before trusting it,
   and **CRL/OCSP revocation** of the signer at genTime. Those belong to the LTV evidence-capture path —
-  see RIGA ADR 0064 (evidence-storage model). This package establishes the CA-granted-at-genTime binding;
+  This package establishes the CA-granted-at-genTime binding;
   it does not yet persist long-term validation material.
 
 ## Test

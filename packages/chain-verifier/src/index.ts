@@ -68,7 +68,7 @@ async function sha256(data: Uint8Array): Promise<Uint8Array> {
   return new Uint8Array(await crypto.subtle.digest('SHA-256', ab(data)));
 }
 
-// ── Pass 6 (bytes-binding, §7.2 / ADR 0061) ──────────────────────────────────
+// ── Pass 6 (bytes-binding, §7.2) ──────────────────────────────────
 // A MUTATION MAY carry a hiding `bytes_commitment` over the document's bytes:
 //   value = SHA-256( "val.bytes-commitment.v1" ‖ 0x00 ‖ nonce(32B) ‖ SHA-256(file_bytes)(32B) )
 // The nonce is held producer-side (never on chain / in any export), so the on-chain
@@ -974,7 +974,7 @@ export async function verifyDelegatorSignature(
 const QUALIFIED_ALGS = new Set(['qes', 'eidas_qes', 'eidas_eaa']);
 
 /**
- * ADR 0063 — a resolved QES validation verdict consumed by the core (produced caller-side by
+ * §7.1(f) — a resolved QES validation verdict consumed by the core (produced caller-side by
  * `@val-protocol/qes-validator`). Structural shape only — the core does NOT depend on that package.
  */
 export interface QesVerdict {
@@ -990,7 +990,7 @@ export interface QesVerdict {
   } | null;
   /** Opaque reference to the full reproducible validation report. */
   reportRef?: string | null;
-  /** Per-signature key (ADR 0063 item 5) = sha256-hex of the delegation `signature.signature` bytes,
+  /** Per-signature key (§7.1(f) per-signature matching) = sha256-hex of the delegation `signature.signature` bytes,
    *  as `@val-protocol/qes-validator` emits. When present, the verifier matches THIS report to THIS
    *  signature (not "first qualified report"), so distinct qualified delegations cannot borrow each
    *  other's verdict on a multi-grant / mixed-profile chain. Absent ⇒ legacy unkeyed (single-grant). */
@@ -1024,7 +1024,7 @@ export async function verifyDelegationTrustChain(
   const base = { keyBinding: null as ValKeyBinding | null, subjectAssurance: null as ValIdentityAssurance | null };
   // Profile C (qualified). The qualified signature's ETSI/eIDAS validation is NOT done in this zero-dep
   // core — it is produced caller-side by @val-protocol/qes-validator and supplied as a resolved verdict
-  // (ADR 0063), exactly like Pass 4's anchorTrust. With a `qualified: true` verdict ⇒ Profile C VERIFIED;
+  // (§7.1(f)), exactly like Pass 4's anchorTrust. With a `qualified: true` verdict ⇒ Profile C VERIFIED;
   // without one ⇒ `qualified_unverified` (classified, never silently upgraded).
   if (QUALIFIED_ALGS.has(delegationSig?.alg)) {
     if (qesVerdict?.qualified === true) {
@@ -1117,7 +1117,7 @@ export interface ValBlock {
   // §7.5 grounding: content-hashes this MUTATION asserts it derived from. The verifier checks each
   // was read via a prior ACCESS by the same principal in this chain (read-before-derive).
   grounded_document_hashes?: string[] | null;
-  // §4.4 + ADR 0061: optional hiding bytes-commitment over the document's bytes (Pass 6). Opt-in;
+  // §4.4: optional hiding bytes-commitment over the document's bytes (Pass 6). Opt-in;
   // re-derived only at evidence time from a disclosed { bytes, nonce }. `value` is 64-char hex.
   bytes_commitment?: { alg?: string; value?: string } | null;
   // §4.3 CONSENT (sign-class): the single signed-artifact hash bound directly by the bond, and the
@@ -1213,7 +1213,7 @@ export interface ValVerificationResult {
   firstAuthorityViolation: { sequenceNumber: string; reason: string } | null;
   firstSignatureViolation: { sequenceNumber: string; reason: string } | null;
   /**
-   * Pass 6 (bytes-binding, §7.2 / ADR 0061): a MUTATION's `bytes_commitment` re-derived from a
+   * Pass 6 (bytes-binding, §7.2): a MUTATION's `bytes_commitment` re-derived from a
    * disclosed { bytes, nonce } (see verifyValChain `options.bytesDisclosures`). OPT-IN and additive:
    * `'bound'` = at least one commitment was disclosed and every disclosed one matched; `'mismatch'`
    * = a disclosed commitment failed to reproduce (the bytes are NOT the committed document);
@@ -1371,7 +1371,7 @@ export async function verifyValChain(
   options?: {
     delegatorAuthorityPolicy?: DelegatorAuthorityPolicy;
     /**
-     * ADR 0061 Pass 6 — evidence-time bytes-binding disclosures, one per document the auditor holds.
+     * Pass 6 (§7.2) — evidence-time bytes-binding disclosures, one per document the auditor holds.
      * `documentBytesBase64` is the file the auditor produced as evidence; `nonceHex` is the room-side
      * nonce disclosed in the evidence bundle (never on chain). The verifier hashes the bytes itself
      * and recomputes the hiding commitment — it never trusts a supplied hash. Keyed by `resourceId`
@@ -1387,11 +1387,11 @@ export async function verifyValChain(
      */
     anchorTrust?: { tsaCertSpkis: string[] };
     /**
-     * ADR 0063 Profile C — resolved eIDAS QES validation verdicts, produced caller-side by
+     * Profile C (§7.1(f)) — resolved eIDAS QES validation verdicts, produced caller-side by
      * `@val-protocol/qes-validator` (which carries the heavy ETSI deps; this zero-dep core only consumes
      * the verdict, exactly like `anchorTrust`). A qualified delegation (`qes`/`eidas_qes`/`eidas_eaa`)
      * with a matching `qualified: true` report verifies Profile C; absent ⇒ `qualified_unverified`
-     * (classified, never silently upgraded). Per-signature matching (ADR 0063 item 5): when reports
+     * (classified, never silently upgraded). Per-signature matching (§7.1(f) per-signature matching): when reports
      * carry `signatureRef` (sha256-hex of the delegation signature bytes, as `qes-validator` emits),
      * each delegation matches ONLY its own report — distinct qualified delegations cannot borrow each
      * other's verdict. Legacy unkeyed reports (no `signatureRef`) fall back to first-qualified for
@@ -1427,7 +1427,7 @@ export async function verifyValChain(
     nonValBlockCount: 0,
   };
 
-  // Pass 6 disclosure map (ADR 0061). Decoded once; null when the caller supplied none.
+  // Pass 6 disclosure map (§7.2 Pass 6). Decoded once; null when the caller supplied none.
   const bytesDisclosures = options?.bytesDisclosures
     ? new Map(
         options.bytesDisclosures.map((d) => [
@@ -1591,7 +1591,7 @@ export async function verifyValChain(
           result.consentBonds.push({ sequenceNumber: seqStr, alg: null, profile: 'unknown', signatureValid: false });
         } else if (QUALIFIED_ALGS.has(sig.alg)) {
           // 0.11.0 — a QUALIFIED consent signature follows the SAME discipline as qualified
-          // delegations (ADR 0063): its ETSI/eIDAS crypto verification is produced caller-side
+          // delegations (§7.1(f)): its ETSI/eIDAS crypto verification is produced caller-side
           // (@val-protocol/qes-validator) and supplied as a per-signature verdict via
           // options.qesValidation. With a matching `qualified: true` verdict ⇒ verified (green);
           // without one ⇒ CLASSIFIED, not verified (signature pass untouched — never red on
@@ -1678,7 +1678,7 @@ export async function verifyValChain(
         }
       }
 
-      // ── Pass 6 (bytes-binding, ADR 0061) — opt-in, evidence-time. A MUTATION carrying a
+      // ── Pass 6 (bytes-binding, §7.2 Pass 6) — opt-in, evidence-time. A MUTATION carrying a
       // hiding `bytes_commitment` is bound to real file bytes ONLY via a disclosed { bytes, nonce }
       // (room-side nonce, never on chain). The verifier hashes the bytes itself and recomputes the
       // commitment. No commitment or no matching disclosure ⇒ not evaluated (never a failure),
@@ -1812,7 +1812,7 @@ export async function verifyValChain(
         const dsig = block.human_attestation?.delegator_authority?.signature;
         if (dsig) {
           const oroot = block.human_attestation?.delegator_authority?.org_root ?? null;
-          // ADR 0063 item 5 — supply a resolved QES verdict for qualified delegations by PER-SIGNATURE
+          // §7.1(f) per-signature matching — supply a resolved QES verdict for qualified delegations by PER-SIGNATURE
           // matching: a report whose `signatureRef` == sha256-hex(this signature) is THIS signature's
           // verdict (qualified or not). When reports are keyed but none matches ⇒ no verdict (never
           // borrow another signature's — the old "first qualified" bug). Legacy unkeyed reports fall

@@ -1,5 +1,5 @@
 /**
- * @val-protocol/qes-validator — eIDAS QES validation for VAL Profile C (ADR 0063).
+ * @val-protocol/qes-validator — eIDAS QES validation for VAL Profile C (§7.1(f)).
  *
  * The `validateQes` entry point a relying party runs THEMSELVES (so verification stays trustless), plus
  * the `QesValidationReport` contract the zero-dep `@val-protocol/chain-verifier` consumes
@@ -131,7 +131,7 @@ export interface QesValidationReport {
 /**
  * Trust inputs for the offline determination.
  *
- * INVARIANT (ADR 0063, ruling 1): **the trust anchor is ONLY derived from the EU Trusted List.** No caller
+ * INVARIANT (EU-Trusted-List-only invariant): **the trust anchor is ONLY derived from the EU Trusted List.** No caller
  * can inject a trust anchor — `x5c`-supplied and `intermediateHintsDer` certificates are untrusted path-
  * building HINTS, validated per RFC 5280 §6 but NEVER trusted as a root. A path is anchored only when it
  * reaches a cert the LOTL resolver (`matchGrantedCaQc`) calls a granted CA/QC-for-eSignatures service at
@@ -157,7 +157,7 @@ export interface QesValidationInput {
   /** The qualified signature carried in `human_attestation.delegator_authority.signature`
    *  (a ValQesSignature { alg, signature } or a bare base64 JAdES string). */
   signature: unknown;
-  /** Validation/signing time (defaults to now). For LTV, pass a chain anchor genTime (ADR 0062). */
+  /** Validation/signing time (defaults to now). For LTV, pass a chain anchor genTime (§8.4 anchor genTime). */
   validationTime?: string;
   /** Trust material for the offline determination. */
   trust: QesTrustInput;

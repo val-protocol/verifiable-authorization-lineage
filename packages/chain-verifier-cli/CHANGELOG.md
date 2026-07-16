@@ -1,5 +1,10 @@
 # @val-protocol/chain-verifier-cli — CHANGELOG
 
+## 0.5.1 — 2026-07-16 — internal-reference normalization (CHANGELOG only)
+
+- A repository-internal decision-record number in a past CHANGELOG entry is replaced with
+  its public spec anchor. No code change — identical behavior to 0.5.0.
+
 ## 0.5.0 — 2026-07-16 — self-verifying HTML report (`--html`)
 
 - **`--html=<path>`** — beyond the per-row integrity walk, runs the FULL `verifyValChain`
@@ -35,7 +40,7 @@
 
 - **Bump `@val-protocol/chain-verifier` `^0.7.0` → `^0.9.0`.** The published CLI was pinned to a verifier
   two minors stale (a `^0.7.0` caret cannot reach 0.8/0.9), so `val-verify` shipped without Pass 4
-  (external-anchor / RFC 3161, chain-verifier 0.8.0) or the Profile-C QES verdict seam (0.9.0, ADR 0063).
+  (external-anchor / RFC 3161, chain-verifier 0.8.0) or the Profile-C QES verdict seam (0.9.0, §7.1(f)).
   This release tracks the current verifier. No CLI surface change — `val-verify` flags/output are unchanged;
   the underlying verification gains the newer passes.
 

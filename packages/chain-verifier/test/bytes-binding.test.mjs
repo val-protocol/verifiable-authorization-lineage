@@ -1,4 +1,4 @@
-// Pass 6 — bytes-binding (ADR 0061). A MUTATION's hiding `bytes_commitment` is
+// Pass 6 — bytes-binding (§7.2 Pass 6). A MUTATION's hiding `bytes_commitment` is
 // re-derived ONLY at evidence time from a disclosed { bytes, nonce }. The verifier
 // hashes the bytes itself; absence never fails the verdict.
 import { test } from 'node:test';

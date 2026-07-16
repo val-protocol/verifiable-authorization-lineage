@@ -1,4 +1,4 @@
-// ADR 0063 Profile C — a qualified delegation (`qes`/`eidas_qes`/`eidas_eaa`) is CLASSIFIED by default
+// Profile C (§7.1(f)) — a qualified delegation (`qes`/`eidas_qes`/`eidas_eaa`) is CLASSIFIED by default
 // (`qualified_unverified`) and only VERIFIED when the caller supplies a resolved QES verdict via
 // `options.qesValidation` (produced by @val-protocol/qes-validator). The zero-dep core consumes the
 // verdict; it never validates the QES itself. Default behaviour is unchanged (classified, never upgraded).
@@ -69,7 +69,7 @@ test('Profile C with qualified:false verdict => still classified, NOT upgraded',
   assert.notEqual(r.signature, 'green'); // a non-qualified verdict never verifies
 });
 
-// ── ADR 0063 item 5: PER-SIGNATURE matching (signatureRef) — the anti-borrow proof ──────────────────
+// ── §7.1(f) per-signature matching: PER-SIGNATURE matching (signatureRef) — the anti-borrow proof ──────────────────
 import { createHash } from 'node:crypto';
 const refOf = (sig) => createHash('sha256').update(sig, 'utf8').digest('hex'); // == qes-validator's signatureRef
 
