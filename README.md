@@ -53,6 +53,8 @@ The distinction in one line: VI is a **selectively-disclosable credential** veri
 
 The normative spec lives in [`spec/`](spec/README.md): [scope & principles](spec/README.md) · [wire format](spec/04-wire-format.md) · [lineage invariant](spec/05-lineage-invariant.md) · [scope predicate](spec/06-scope-predicate.md) · [offline verifier](spec/07-offline-verifier.md) · [external anchor](spec/08-external-anchor.md).
 
+Control-framework alignment (informative): [ATC.md](ATC.md) maps VAL mechanisms to the Vanta Agentic Trust Controls draft and AARM Core R1–R6, stating coverage — and non-coverage — control by control.
+
 ## Reference Implementation
 
 The reference packages live under [`packages/`](packages/) (Apache-2.0, published under the `@val-protocol` scope):
