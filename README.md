@@ -1,6 +1,8 @@
 # Verifiable Authorization Lineage (VAL)
 
-**An open protocol for offline-verifiable proof that an action — by a human or by an AI agent acting on their behalf — stayed within human-delegated authority.**
+**Records prove what your agents did. VAL proves they were allowed to.**
+
+An open protocol for offline-verifiable proof that an action — by a human or by an AI agent acting on their behalf — stayed within human-delegated authority.
 
 **Status**: Draft (v0.1). Maintained by RIGA Solutions; open to multi-stakeholder contribution. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
@@ -34,6 +36,26 @@ VAL records every action as a typed **block** in an append-only, hash-chained **
 - **ACCESS / MUTATION** (and CONSENT / COMMUNICATION / SETTLEMENT) record actions that must reference a parent assignment — satisfied by *lineage + action + container*, or by a Merkle **membership proof** for isolation-scoped reads.
 - **ANCHOR** periodically commits the chain head to an external timestamp authority.
 - The **[offline verifier](spec/07-offline-verifier.md)** walks the chain, recomputes the hashes, checks the lineage to a human root, evaluates the scope predicates, checks each ASSIGNMENT's delegated scope against its issuer's **declared authority** (so a read-only delegator cannot have granted writes), and reports a **conformance profile** (A: operator-attested → B/C: human-signed) so consumers interpret the residual-trust statement correctly.
+
+## What VAL Proves — and What It Does Not
+
+Every claim below is re-derived by the verifier from chain bytes plus public trust anchors; every boundary is stated so no claim has to be taken on faith. The verifier reports the chain-level conformance profile as the **floor** across lineage roots — never rounded up ([§5.2](spec/05-lineage-invariant.md), [§7.3](spec/07-offline-verifier.md)).
+
+| Claim (verifier pass) | Proves | Does not prove / residual trust |
+|---|---|---|
+| **Integrity** (Pass 1) | Committed blocks were not modified, inserted, deleted, or reordered — recomputed hash by hash | That every action was captured. No record system can self-certify capture completeness; coverage is an instrumentation property, not a hashing property |
+| **Human root — Profile A** (Pass 2) | Every action traces to a **human-attributed** authorization inside the tamper-evident chain; the attribution itself cannot be revised post-hoc | The attribution is the operator's runtime claim at emission. Profile A chains are "human-attributed", **not** "human-signed" |
+| **Human root — Profile B** (Pass 2) | The root authorization is signed by a WebAuthn **device key** under the delegator's control — key control is cryptographically verified, with zero operator trust | Legal identity: the name is declarative. Key control is proven; who the keyholder legally is, is not |
+| **Human root — Profile C** (Pass 2) | The root is signed under a **qualified eIDAS** mechanism by an identity-proofed natural person — verified when a QES validation verdict is supplied | Without a verdict, honestly classified `qualified_unverified`, never silently upgraded. Residual trust: the QTSP |
+| **Scope-respect** (Pass 3) | Each action fell within its **effective granted authority** (intersected down the delegation chain) — re-evaluated by the verifier, not read back from the operator's decision log | What *should* have been granted. VAL checks actions against the grant, not the grant against your policy intentions |
+| **Delegator authority** (Pass 5) | The issuing human had **standing to grant** the delegated scope — a read-only delegator cannot have granted writes | Requires the operator's capability policy as a pinned input; without it, only carrier presence is enforced |
+| **Grounding** | The actor **read a content-address before deriving from it** (read-before-derive, chain-internal) | That the content-address is a particular file — that is bytes-binding, below |
+| **Bytes-binding** (Pass 6, optional) | A chain content-address **is the document in hand**, re-derived at evidence time from a `{ bytes, nonce }` disclosure | Nothing about undisclosed documents; the on-chain commitment is hiding by design |
+| **External anchor** (Pass 4, optional) | The covered blocks **existed no later than** the TSA-attested time — an independent timestamp authority's signature, not the operator's clock | Completeness or freshness. Temporal existence only; no time-policy evaluation |
+
+What VAL deliberately does **not** do: capture completeness, runtime enforcement (permit/deny decisions — [§1.2](spec/README.md)), identity issuance, configuration/environment snapshots, payload confidentiality beyond content-addressing. Adjacent layers own those; [ATC.md](ATC.md) maps the boundaries control by control.
+
+The row no tamper-evident log can offer: **every action traces to a human-rooted authorization whose scope the verifier re-checks.** A chain that records actions with cryptographic integrity but no structural binding to authorization still reduces to "trust the operator's enforcement was correct" ([§5.5](spec/05-lineage-invariant.md)).
 
 ## VAL in the Protocol Landscape
 
