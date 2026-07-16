@@ -1,5 +1,28 @@
 # @val-protocol/chain-verifier-cli — CHANGELOG
 
+## 0.5.0 — 2026-07-16 — self-verifying HTML report (`--html`)
+
+- **`--html=<path>`** — beyond the per-row integrity walk, runs the FULL `verifyValChain`
+  (§7.2, all passes), prints the §7.3 summary, and writes a **single-file, self-verifying
+  HTML report**: the document embeds the exact chain bytes (base64 NDJSON) and the complete
+  ESM source of `@val-protocol/chain-verifier`, and on every open the reader's browser
+  imports the embedded verifier and **re-derives every pass locally** — offline, zero
+  network requests, zero reads against the operator. The verdict is painted from the
+  in-browser run, never asserted by the generator; the embedded chain and verifier are
+  downloadable from the report for out-of-band re-verification. Plain-language pass cards
+  state what each pass proves and what it does not (capture completeness is an
+  instrumentation property; the profile letter is the §5.2 floor, never rounded up).
+- **`--trust=<path>`** — a JSON file of §7.1 trust-anchor inputs (`delegatorAuthorityPolicy`,
+  `anchorTrust`, `qesValidation`, `bytesDisclosures`) passed to `verifyValChain` and embedded
+  verbatim in the report so the in-browser re-run evaluates the same inputs.
+- **`./report` subpath export** — `buildHtmlReport()` is importable
+  (`@val-protocol/chain-verifier-cli/report`) so other tooling (e.g. the demo package) can
+  emit the same artifact. Declarations now ship (`declaration: true`).
+- Exit code: with `--html`, non-zero also when any VAL pass is red or an opt-in pass
+  reports `mismatch`.
+- Bump `@val-protocol/chain-verifier` `^0.10.0` → `^0.11.1` (floor fix: no phantom 'A'
+  from action-block lineage walks — a B/C-rooted chain with actions now reports its true floor).
+
 ## 0.4.0 — 2026-07-04
 
 - **Bump `@val-protocol/chain-verifier` `^0.9.0` → `^0.10.0`** (a 0.x caret cannot cross minors).
