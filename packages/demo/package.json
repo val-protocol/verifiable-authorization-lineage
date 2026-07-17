@@ -1,7 +1,7 @@
 {
   "name": "@val-protocol/demo",
-  "version": "0.1.0",
-  "description": "Two-act VAL demo: mints a live Profile-B chain (device-key-signed human root, delegated agent actions, a consent bond), verifies it offline, then attacks it four ways — byte tamper, full history rewrite, signature strip, silent truncation — showing exactly what each attack breaks and what it can only demote. Run: npx @val-protocol/demo",
+  "version": "0.1.1",
+  "description": "Runnable VAL demo: mints a live Profile-B chain (device-key-signed human root, delegated agent actions, a consent bond), verifies it offline, then attacks it four ways — byte tamper, full history rewrite, signature strip, silent truncation — showing exactly what each attack breaks and what it can only demote. Run: npx @val-protocol/demo",
   "license": "Apache-2.0",
   "author": "RIGA <hello@riga.solutions>",
   "type": "module",

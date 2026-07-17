@@ -172,7 +172,7 @@ interface Minted {
 async function mint(): Promise<Minted> {
   const alice: DemoKey = generateKeyPairSync('ec', { namedCurve: 'P-256' });
   const subjectHash = sha256hex('alice-demo');
-  const assurance = { source: 'self_asserted', subject_claim: 'Alice Martin' };
+  const assurance = { source: 'self_asserted', subject_claim: 'Alice' };
 
   // Enrolled self-attestation of Alice's key. HONEST: a software key has no verified
   // hardware attestation, so key_binding is 'unattested' — §5.2 forbids claiming more.
