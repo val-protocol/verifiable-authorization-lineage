@@ -4,7 +4,7 @@
 
 An open protocol for offline-verifiable proof that an action — by a human or by an AI agent acting on their behalf — stayed within human-delegated authority.
 
-**Status**: Draft (v0.1). Maintained by [RIGA Solutions](https://riga.solutions); open to multi-stakeholder contribution. See [CONTRIBUTING.md](CONTRIBUTING.md).
+**Status**: Draft (v0.1). Maintained by RIGA Solutions; open to multi-stakeholder contribution. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 VAL specifies a wire format and a verification procedure that bind every action back to a human-signed root authorization through a typed, hash-chained lineage — so an outside party (a regulator, a counterparty, an auditor) can verify the action was authorized **without trusting the operator that recorded it**.
 
